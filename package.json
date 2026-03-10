@@ -1,0 +1,25 @@
+{
+  "name": "workspace",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "tts-proxy": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/khorokhorina-eng/FocusTrace.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/khorokhorina-eng/FocusTrace/issues"
+  },
+  "homepage": "https://github.com/khorokhorina-eng/FocusTrace#readme",
+  "dependencies": {
+    "pdfjs-dist": "^3.11.174",
+    "stripe": "^20.4.0"
+  }
+}
