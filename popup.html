@@ -8,29 +8,32 @@
   </head>
   <body>
     <main class="container">
-      <h1>PDF Text to Speech</h1>
+      <h1 class="title">PDF Text to Speech</h1>
       <p id="status" class="status">Ready</p>
       <div class="controls">
         <button id="play" class="primary">Read Aloud</button>
-        <button id="pause" class="secondary">Pause</button>
-        <button id="stop" class="secondary">Stop</button>
+        <button id="pause" class="secondary" disabled>Pause</button>
+        <button id="stop" class="secondary" disabled>Stop</button>
       </div>
+      <input id="fileInput" class="hidden-input" type="file" accept=".pdf,application/pdf" />
+      <button id="openFile" class="file-btn">Open PDF File</button>
+      <p id="hint" class="hint">Upload a .pdf file to start reading.</p>
       <label class="speed">
-        Speed
-        <select id="speed">
+        <span>Speed</span>
+        <select id="speed" aria-label="Playback speed">
           <option value="0.75">0.75x</option>
           <option value="1" selected>1x</option>
           <option value="1.25">1.25x</option>
           <option value="1.5">1.5x</option>
         </select>
       </label>
-      <p id="hint" class="hint">Open a PDF in Chrome to start.</p>
-      <details id="debugPanel" class="debug-panel">
-        <summary>Debug info</summary>
-        <pre id="debugOutput" class="debug-output">No debug data yet.</pre>
-      </details>
-      <button id="upgrade" class="upgrade-btn hidden">Upgrade</button>
+      <button id="limitUpgrade" class="upgrade-btn hidden">Upgrade</button>
+      <div class="footer-links">
+        <button id="upgrade" class="link-btn">Get plan</button>
+        <button id="contact" class="link-btn">Contact us</button>
+      </div>
     </main>
+    <script src="node_modules/pdfjs-dist/build/pdf.min.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

@@ -1,163 +1,530 @@
+const pdfjs = window.pdfjsLib;
 const statusEl = document.getElementById("status");
 const hintEl = document.getElementById("hint");
 const playBtn = document.getElementById("play");
 const pauseBtn = document.getElementById("pause");
 const stopBtn = document.getElementById("stop");
 const speedSelect = document.getElementById("speed");
+const openFileBtn = document.getElementById("openFile");
+const fileInput = document.getElementById("fileInput");
+const limitUpgradeBtn = document.getElementById("limitUpgrade");
 const upgradeBtn = document.getElementById("upgrade");
-const debugPanelEl = document.getElementById("debugPanel");
-const debugOutputEl = document.getElementById("debugOutput");
+const contactBtn = document.getElementById("contact");
 
-let activeTabId = null;
+const state = {
+  status: "idle",
+  message: "Upload a .pdf file to start reading.",
+  speed: 1,
+  fileName: "",
+  totalPages: 0,
+  totalChunks: 0,
+  currentChunk: 0,
+  language: "",
+};
+
+let textChunks = [];
+let currentChunkIndex = 0;
+let detectedLanguage = "";
+let currentAudio = null;
+let currentAudioUrl = "";
+let playbackToken = 0;
+let playbackStartedAtMs = 0;
+let paywallStopTimer = null;
+let currentFileBuffer = null;
 
 const STATUS_LABELS = {
   idle: "Ready",
-  loading: "Preparing",
+  loading: "Loading",
   reading: "Reading",
   paused: "Paused",
   finished: "Finished",
   error: "Unable to read",
 };
 
-function setControlsEnabled(enabled) {
-  playBtn.disabled = !enabled;
-  pauseBtn.disabled = !enabled;
-  stopBtn.disabled = !enabled;
-  speedSelect.disabled = !enabled;
+if (pdfjs?.GlobalWorkerOptions) {
+  pdfjs.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL(
+    "node_modules/pdfjs-dist/build/pdf.worker.min.js"
+  );
 }
 
-function renderDebug(state) {
-  if (!debugOutputEl) {
-    return;
-  }
-
-  if (!state?.debug) {
-    debugOutputEl.textContent = "No debug data yet.";
-    if (debugPanelEl) {
-      debugPanelEl.open = false;
-    }
-    return;
-  }
-
-  const debug = state.debug;
-  const pageLengths = Array.isArray(debug.pageTextLengths) ? debug.pageTextLengths : [];
-  const lines = [
-    `stage: ${debug.stage || "-"}`,
-    `sourceType: ${debug.sourceType || "-"}`,
-    `pdfUrl: ${debug.pdfUrl || "-"}`,
-    `pages: ${Number.isFinite(state.totalPages) ? state.totalPages : 0}`,
-    `chunks: ${Number.isFinite(state.totalChunks) ? state.totalChunks : 0}`,
-    `language: ${state.language || "-"}`,
-    `totalExtractedChars: ${Number.isFinite(debug.totalExtractedChars) ? debug.totalExtractedChars : 0}`,
-    `pageTextLengths: ${pageLengths.length ? pageLengths.join(", ") : "-"}`,
-    `lastError: ${debug.lastError || "-"}`,
-  ];
-
-  debugOutputEl.textContent = lines.join("\n");
-  if (debugPanelEl) {
-    debugPanelEl.open = state.status === "error";
-  }
+function setStatus(status, message = "") {
+  state.status = status;
+  state.message = message;
+  updateUI();
 }
 
-function updateUI(state) {
-  if (!state) {
-    statusEl.textContent = "Open a PDF to start";
-    hintEl.textContent = "Make sure the active tab is a PDF.";
-    upgradeBtn.classList.add("hidden");
-    setControlsEnabled(false);
-    renderDebug(null);
-    return;
-  }
-
-  const label = STATUS_LABELS[state.status] || "Ready";
-  statusEl.textContent = label;
+function updateUI() {
+  statusEl.textContent = STATUS_LABELS[state.status] || "Ready";
   hintEl.textContent = state.message || " ";
-  const showUpgrade =
+  pauseBtn.textContent = state.status === "paused" ? "Resume" : "Pause";
+  const shouldShowLimitUpgrade =
     state.status === "error" &&
     typeof state.message === "string" &&
     state.message.includes("Upgrade to continue");
-  upgradeBtn.classList.toggle("hidden", !showUpgrade);
-
-  if (state.speed) {
-    speedSelect.value = String(state.speed);
-  }
-
-  pauseBtn.textContent = state.status === "paused" ? "Resume" : "Pause";
-  playBtn.disabled = state.status === "reading" || state.status === "loading";
+  limitUpgradeBtn.classList.toggle("hidden", !shouldShowLimitUpgrade);
+  playBtn.disabled =
+    !currentFileBuffer || state.status === "loading" || state.status === "reading";
   pauseBtn.disabled = !(state.status === "reading" || state.status === "paused");
   stopBtn.disabled = !(state.status === "reading" || state.status === "paused");
   speedSelect.disabled = state.status === "loading";
-  renderDebug(state);
 }
 
-function getActiveTab() {
+function cleanupCurrentAudio() {
+  if (paywallStopTimer) {
+    clearTimeout(paywallStopTimer);
+    paywallStopTimer = null;
+  }
+  playbackStartedAtMs = 0;
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio.src = "";
+    currentAudio.load();
+    currentAudio = null;
+  }
+  if (currentAudioUrl) {
+    URL.revokeObjectURL(currentAudioUrl);
+    currentAudioUrl = "";
+  }
+}
+
+function schedulePaywallStop(token, remainingSeconds) {
+  if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) {
+    return;
+  }
+
+  paywallStopTimer = setTimeout(async () => {
+    if (token !== playbackToken || state.status !== "reading") {
+      return;
+    }
+    cleanupCurrentAudio();
+    await commitPlaybackUsage().catch(() => null);
+    setStatus("error", paywallReachedMessage());
+  }, remainingSeconds * 1000);
+}
+
+function resetPreparedText() {
+  cleanupCurrentAudio();
+  textChunks = [];
+  currentChunkIndex = 0;
+  detectedLanguage = "";
+  state.totalPages = 0;
+  state.totalChunks = 0;
+  state.currentChunk = 0;
+  state.language = "";
+}
+
+function normalizeText(text) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function splitIntoSentences(text) {
+  const matches = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g);
+  return matches ? matches.map((sentence) => sentence.trim()).filter(Boolean) : [];
+}
+
+function buildChunks(pages) {
+  const chunks = [];
+  const maxLength = 400;
+
+  pages.forEach((pageText) => {
+    const normalized = normalizeText(pageText);
+    if (!normalized) {
+      return;
+    }
+
+    const parts = splitIntoSentences(normalized);
+    const units = parts.length ? parts : [normalized];
+    let current = "";
+
+    units.forEach((unit) => {
+      const candidate = current ? `${current} ${unit}` : unit;
+      if (candidate.length > maxLength) {
+        if (current) {
+          chunks.push(current.trim());
+          current = unit;
+        } else {
+          chunks.push(unit.trim());
+          current = "";
+        }
+      } else {
+        current = candidate;
+      }
+    });
+
+    if (current) {
+      chunks.push(current.trim());
+    }
+  });
+
+  return chunks;
+}
+
+function detectLanguageFromText(text) {
   return new Promise((resolve) => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      resolve(tabs?.[0] || null);
+    if (!chrome?.i18n?.detectLanguage) {
+      resolve("");
+      return;
+    }
+
+    chrome.i18n.detectLanguage(text, (result) => {
+      if (chrome.runtime.lastError || !result?.languages?.length) {
+        resolve("");
+        return;
+      }
+
+      const best = result.languages
+        .slice()
+        .sort((a, b) => b.percentage - a.percentage)[0];
+      resolve(best?.language || "");
     });
   });
 }
 
-function sendMessageToTab(message) {
-  return new Promise(async (resolve) => {
-    const tab = await getActiveTab();
-    if (!tab?.id) {
-      updateUI(null);
-      resolve(null);
-      return;
-    }
-    activeTabId = tab.id;
-    chrome.tabs.sendMessage(tab.id, message, (response) => {
+function getPlaybackQuota() {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: "getPlaybackQuota" }, (response) => {
       if (chrome.runtime.lastError) {
-        updateUI(null);
-        resolve(null);
+        reject(new Error(chrome.runtime.lastError.message));
         return;
       }
-      if (response?.state) {
-        updateUI(response.state);
+      if (!response?.ok) {
+        reject(new Error(response?.error || "Unable to read playback quota."));
+        return;
       }
       resolve(response);
     });
   });
 }
 
-async function refreshState() {
-  await sendMessageToTab({ type: "getState" });
+function addPlaybackUsage(seconds) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: "addPlaybackUsage", seconds }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (!response?.ok) {
+        reject(new Error(response?.error || "Unable to save playback usage."));
+        return;
+      }
+      resolve(response);
+    });
+  });
 }
 
+function requestTtsBytes(text) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(
+      {
+        type: "synthesizeSpeech",
+        text,
+        speed: state.speed,
+        language: detectedLanguage,
+      },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (!response?.ok || !Array.isArray(response.bytes)) {
+          reject(new Error(response?.error || "TTS request failed."));
+          return;
+        }
+        resolve({
+          bytes: response.bytes,
+          mimeType: response.mimeType || "audio/mpeg",
+        });
+      }
+    );
+  });
+}
+
+function formatRemainingSeconds(seconds) {
+  const safeSeconds = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
+  const wholeSeconds = Math.ceil(safeSeconds);
+  const minutes = Math.floor(wholeSeconds / 60);
+  const rest = wholeSeconds % 60;
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
+function paywallReachedMessage() {
+  return "Free limit reached: 0:05 of playback. Upgrade to continue.";
+}
+
+async function commitPlaybackUsage() {
+  if (!playbackStartedAtMs) {
+    return null;
+  }
+
+  const elapsedSeconds = (Date.now() - playbackStartedAtMs) / 1000;
+  playbackStartedAtMs = 0;
+  if (elapsedSeconds <= 0) {
+    return null;
+  }
+
+  return addPlaybackUsage(elapsedSeconds);
+}
+
+async function enforcePaywallBeforePlayback() {
+  const quota = await getPlaybackQuota();
+  const remainingSeconds = Number(quota.remainingSeconds);
+  if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) {
+    setStatus("error", paywallReachedMessage());
+    return { allowed: false, remainingSeconds: 0 };
+  }
+  return { allowed: true, remainingSeconds };
+}
+
+async function extractPdfText(arrayBuffer) {
+  if (!pdfjs) {
+    throw new Error("PDF engine not available.");
+  }
+
+  const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
+  const pdf = await loadingTask.promise;
+  const pages = [];
+
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const textContent = await page.getTextContent();
+    const pageText = textContent.items
+      .map((item) => item.str)
+      .filter(Boolean)
+      .join(" ");
+    pages.push(pageText);
+  }
+
+  return { pages, totalPages: pdf.numPages };
+}
+
+async function prepareSelectedFile(file) {
+  if (!file) {
+    return;
+  }
+
+  resetPreparedText();
+  state.fileName = file.name || "";
+  setStatus("loading", "Preparing PDF text...");
+
+  try {
+    currentFileBuffer = await file.arrayBuffer();
+    const { pages, totalPages } = await extractPdfText(currentFileBuffer.slice(0));
+    textChunks = buildChunks(pages);
+    state.totalPages = totalPages;
+    state.totalChunks = textChunks.length;
+    state.currentChunk = 0;
+
+    if (!textChunks.length) {
+      setStatus("error", "No selectable text found. This PDF might be scanned.");
+      return;
+    }
+
+    const sample = textChunks.slice(0, 3).join(" ").slice(0, 1000);
+    detectedLanguage = await detectLanguageFromText(sample);
+    state.language = detectedLanguage;
+    setStatus("idle", `${file.name} is ready to read.`);
+  } catch (error) {
+    const details = error && error.message ? error.message : "Unable to prepare the PDF.";
+    currentFileBuffer = null;
+    setStatus("error", details);
+  }
+}
+
+async function handleAudioEnded(token) {
+  if (token !== playbackToken || state.status !== "reading") {
+    return;
+  }
+
+  if (paywallStopTimer) {
+    clearTimeout(paywallStopTimer);
+    paywallStopTimer = null;
+  }
+  await commitPlaybackUsage().catch(() => null);
+  currentChunkIndex += 1;
+
+  if (currentChunkIndex >= textChunks.length) {
+    state.currentChunk = textChunks.length;
+    cleanupCurrentAudio();
+    setStatus("finished", `${state.fileName || "PDF"} finished.`);
+    return;
+  }
+
+  await speakCurrentChunk(token);
+}
+
+async function speakCurrentChunk(token = playbackToken) {
+  if (token !== playbackToken) {
+    return;
+  }
+
+  if (!textChunks.length) {
+    setStatus("error", "Upload a PDF with selectable text first.");
+    return;
+  }
+
+  while (currentChunkIndex < textChunks.length && !textChunks[currentChunkIndex]) {
+    currentChunkIndex += 1;
+  }
+
+  if (currentChunkIndex >= textChunks.length) {
+    cleanupCurrentAudio();
+    setStatus("finished", `${state.fileName || "PDF"} finished.`);
+    return;
+  }
+
+  state.currentChunk = currentChunkIndex + 1;
+
+  let quota;
+  try {
+    quota = await enforcePaywallBeforePlayback();
+  } catch (error) {
+    const details = error && error.message ? error.message : "Unable to validate playback quota.";
+    setStatus("error", details);
+    return;
+  }
+
+  if (!quota.allowed) {
+    return;
+  }
+
+  setStatus("loading", `Generating audio... ${formatRemainingSeconds(quota.remainingSeconds)} left`);
+
+  let payload;
+  try {
+    payload = await requestTtsBytes(textChunks[currentChunkIndex]);
+  } catch (error) {
+    const details = error && error.message ? error.message : "TTS request failed.";
+    setStatus("error", details);
+    return;
+  }
+
+  if (token !== playbackToken) {
+    return;
+  }
+
+  cleanupCurrentAudio();
+  currentAudio = new Audio();
+  currentAudioUrl = URL.createObjectURL(
+    new Blob([Uint8Array.from(payload.bytes)], { type: payload.mimeType })
+  );
+  currentAudio.src = currentAudioUrl;
+  currentAudio.onended = () => {
+    handleAudioEnded(token);
+  };
+  currentAudio.onerror = () => {
+    cleanupCurrentAudio();
+    setStatus("error", "Audio playback failed.");
+  };
+
+  playbackStartedAtMs = Date.now();
+  schedulePaywallStop(token, quota.remainingSeconds);
+
+  try {
+    await currentAudio.play();
+    setStatus("reading", state.fileName ? `Reading ${state.fileName}` : "Reading");
+  } catch (error) {
+    cleanupCurrentAudio();
+    const details = error && error.message ? error.message : "Unable to start audio playback.";
+    setStatus("error", details);
+  }
+}
+
+async function startPlayback() {
+  if (!textChunks.length) {
+    setStatus("error", "Upload a PDF with selectable text first.");
+    return;
+  }
+
+  if (state.status === "finished") {
+    currentChunkIndex = 0;
+  }
+
+  playbackToken += 1;
+  await speakCurrentChunk(playbackToken);
+}
+
+async function pausePlayback() {
+  if (!currentAudio) {
+    return;
+  }
+
+  if (state.status === "paused") {
+    let quota;
+    try {
+      quota = await enforcePaywallBeforePlayback();
+    } catch (error) {
+      const details = error && error.message ? error.message : "Unable to validate playback quota.";
+      setStatus("error", details);
+      return;
+    }
+    if (!quota.allowed) {
+      return;
+    }
+    playbackStartedAtMs = Date.now();
+    schedulePaywallStop(playbackToken, quota.remainingSeconds);
+    await currentAudio.play();
+    setStatus("reading", state.fileName ? `Reading ${state.fileName}` : "Reading");
+    return;
+  }
+
+  if (paywallStopTimer) {
+    clearTimeout(paywallStopTimer);
+    paywallStopTimer = null;
+  }
+  currentAudio.pause();
+  await commitPlaybackUsage().catch(() => null);
+  setStatus("paused", state.fileName ? `Paused ${state.fileName}` : "Paused");
+}
+
+async function stopPlayback() {
+  playbackToken += 1;
+  await commitPlaybackUsage().catch(() => null);
+  cleanupCurrentAudio();
+  currentChunkIndex = 0;
+  state.currentChunk = 0;
+  if (currentFileBuffer) {
+    setStatus("idle", state.fileName ? `${state.fileName} is ready to read.` : "Ready");
+    return;
+  }
+  setStatus("idle", "Upload a .pdf file to start reading.");
+}
+
+openFileBtn.addEventListener("click", () => {
+  fileInput.click();
+});
+
+fileInput.addEventListener("change", async (event) => {
+  const [file] = event.target.files || [];
+  await prepareSelectedFile(file);
+  event.target.value = "";
+});
+
 playBtn.addEventListener("click", () => {
-  sendMessageToTab({ type: "start" });
+  startPlayback();
 });
 
 pauseBtn.addEventListener("click", () => {
-  if (pauseBtn.textContent === "Resume") {
-    sendMessageToTab({ type: "resume" });
-  } else {
-    sendMessageToTab({ type: "pause" });
-  }
+  pausePlayback();
 });
 
 stopBtn.addEventListener("click", () => {
-  sendMessageToTab({ type: "stop" });
+  stopPlayback();
 });
 
 speedSelect.addEventListener("change", (event) => {
-  const speed = Number.parseFloat(event.target.value);
-  sendMessageToTab({ type: "setSpeed", speed });
+  state.speed = Number.parseFloat(event.target.value) || 1;
 });
 
 upgradeBtn.addEventListener("click", () => {
-  const url = chrome.runtime.getURL("paywall.html");
-  chrome.tabs.create({ url });
+  chrome.tabs.create({ url: chrome.runtime.getURL("paywall.html") });
 });
 
-chrome.runtime.onMessage.addListener((message) => {
-  if (message?.type === "stateUpdate") {
-    updateUI(message.state);
-  }
+limitUpgradeBtn.addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("paywall.html") });
 });
 
-document.addEventListener("DOMContentLoaded", () => {
-  updateUI(null);
-  refreshState();
+contactBtn.addEventListener("click", () => {
+  chrome.tabs.create({ url: "mailto:support@pdftext2speech.com" });
 });
+
+updateUI();
