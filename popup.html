@@ -8,28 +8,50 @@
   </head>
   <body>
     <main class="container">
-      <h1 class="title">PDF Text to Speech</h1>
-      <p id="status" class="status">Ready</p>
-      <div class="controls">
-        <button id="play" class="primary">Read Aloud</button>
-        <button id="pause" class="secondary" disabled>Pause</button>
-        <button id="stop" class="secondary" disabled>Stop</button>
-      </div>
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Browser Reader</p>
+          <h1 class="title">PDF Text to Speech</h1>
+        </div>
+        <button id="upgrade" class="chip-btn">Get plan</button>
+      </section>
+
+      <section class="status-panel">
+        <div class="status-head">
+          <p id="status" class="status">Ready</p>
+          <span class="live-dot" aria-hidden="true"></span>
+        </div>
+        <p id="hint" class="hint">Upload a .pdf file to start reading.</p>
+      </section>
+
       <input id="fileInput" class="hidden-input" type="file" accept=".pdf,application/pdf" />
+
       <button id="openFile" class="file-btn">Open PDF File</button>
-      <p id="hint" class="hint">Upload a .pdf file to start reading.</p>
-      <label class="speed">
-        <span>Speed</span>
-        <select id="speed" aria-label="Playback speed">
-          <option value="0.75">0.75x</option>
-          <option value="1" selected>1x</option>
-          <option value="1.25">1.25x</option>
-          <option value="1.5">1.5x</option>
-        </select>
-      </label>
-      <button id="limitUpgrade" class="upgrade-btn hidden">Upgrade</button>
+
+      <section class="controls-panel">
+        <button id="play" class="primary">Read Aloud</button>
+        <div class="controls-row">
+          <button id="pause" class="secondary" disabled>Pause</button>
+          <button id="stop" class="secondary" disabled>Stop</button>
+          <label class="speed">
+            <span class="speed-label">Speed</span>
+            <select id="speed" aria-label="Playback speed">
+              <option value="0.75">0.75x</option>
+              <option value="1" selected>1x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <button id="limitUpgrade" class="upgrade-btn hidden">Upgrade for unlimited listening</button>
+
+      <p class="mini-disclosure">
+        PDF text is sent to pdftext2speech.com and OpenAI to generate audio.
+      </p>
+
       <div class="footer-links">
-        <button id="upgrade" class="link-btn">Get plan</button>
         <button id="contact" class="link-btn">Contact us</button>
       </div>
     </main>
@@ -54,7 +76,7 @@
               <span class="plan-day-period">PER DAY</span>
             </span>
           </button>
-          <button class="plan-card featured" data-plan-id="yearly">
+          <button class="plan-card featured" data-plan-id="annual">
             <span class="plan-badge accent-badge">MOST POPULAR</span>
             <span class="plan-main">
               <span class="plan-name">12-MONTH PLAN</span>

@@ -36,14 +36,17 @@ let playbackToken = 0;
 let playbackStartedAtMs = 0;
 let paywallStopTimer = null;
 let currentFileBuffer = null;
-let selectedPlanId = "yearly";
+let isPreparingText = false;
+let preparationComplete = false;
+let pendingStartPlayback = false;
+let selectedPlanId = "annual";
 let currentSubscription = { active: false, plan: null };
 
 const PLAN_META = {
   monthly: {
     buttonText: "Continue with 1-month plan",
   },
-  yearly: {
+  annual: {
     buttonText: "Continue with 12-month plan",
   },
 };
@@ -70,6 +73,7 @@ function setStatus(status, message = "") {
 }
 
 function updateUI() {
+  document.body.dataset.status = state.status;
   statusEl.textContent = STATUS_LABELS[state.status] || "Ready";
   hintEl.textContent = state.message || " ";
   pauseBtn.textContent = state.status === "paused" ? "Resume" : "Pause";
@@ -79,7 +83,7 @@ function updateUI() {
     state.message.includes("Upgrade to continue");
   limitUpgradeBtn.classList.toggle("hidden", !shouldShowLimitUpgrade);
   playBtn.disabled =
-    !currentFileBuffer || state.status === "loading" || state.status === "reading";
+    !currentFileBuffer || state.status === "reading";
   pauseBtn.disabled = !(state.status === "reading" || state.status === "paused");
   stopBtn.disabled = !(state.status === "reading" || state.status === "paused");
   speedSelect.disabled = state.status === "loading";
@@ -128,6 +132,9 @@ function resetPreparedText() {
   textChunks = [];
   currentChunkIndex = 0;
   detectedLanguage = "";
+  isPreparingText = false;
+  preparationComplete = false;
+  pendingStartPlayback = false;
   state.totalPages = 0;
   state.totalChunks = 0;
   state.currentChunk = 0;
@@ -278,7 +285,7 @@ function sendRuntimeMessage(message) {
 
 function setPaywallStatus(text, ok = false) {
   paywallStatusEl.textContent = text;
-  paywallStatusEl.style.color = ok ? "#15803d" : "#6b7280";
+  paywallStatusEl.style.color = ok ? "#24553a" : "#6f665c";
 }
 
 function renderPaywallSelection() {
@@ -348,7 +355,7 @@ function formatRemainingSeconds(seconds) {
 }
 
 function paywallReachedMessage() {
-  return "Free limit reached: 0:05 of playback. Upgrade to continue.";
+  return "Free trial used. Upgrade to continue listening.";
 }
 
 async function commitPlaybackUsage() {
@@ -375,26 +382,43 @@ async function enforcePaywallBeforePlayback() {
   return { allowed: true, remainingSeconds };
 }
 
-async function extractPdfText(arrayBuffer) {
+async function openPdfDocument(arrayBuffer) {
   if (!pdfjs) {
     throw new Error("PDF engine not available.");
   }
 
   const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
-  const pdf = await loadingTask.promise;
-  const pages = [];
+  return loadingTask.promise;
+}
 
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const textContent = await page.getTextContent();
-    const pageText = textContent.items
-      .map((item) => item.str)
-      .filter(Boolean)
-      .join(" ");
-    pages.push(pageText);
+function appendPreparedPage(pageText) {
+  const nextChunks = buildChunks([pageText]);
+  if (!nextChunks.length) {
+    return false;
   }
+  textChunks.push(...nextChunks);
+  state.totalChunks = textChunks.length;
+  return true;
+}
 
-  return { pages, totalPages: pdf.numPages };
+async function waitForPreparedChunks(token) {
+  if (token !== playbackToken) {
+    return;
+  }
+  if (currentChunkIndex < textChunks.length) {
+    await speakCurrentChunk(token);
+    return;
+  }
+  if (preparationComplete) {
+    state.currentChunk = textChunks.length;
+    cleanupCurrentAudio();
+    setStatus("finished", `${state.fileName || "PDF"} finished.`);
+    return;
+  }
+  setStatus("loading", "Preparing more pages...");
+  setTimeout(() => {
+    void waitForPreparedChunks(token);
+  }, 250);
 }
 
 async function prepareSelectedFile(file) {
@@ -407,25 +431,68 @@ async function prepareSelectedFile(file) {
   setStatus("loading", "Preparing PDF text...");
 
   try {
+    isPreparingText = true;
+    preparationComplete = false;
     currentFileBuffer = await file.arrayBuffer();
-    const { pages, totalPages } = await extractPdfText(currentFileBuffer.slice(0));
-    textChunks = buildChunks(pages);
-    state.totalPages = totalPages;
-    state.totalChunks = textChunks.length;
+    const pdf = await openPdfDocument(currentFileBuffer.slice(0));
+    state.totalPages = pdf.numPages;
     state.currentChunk = 0;
+    let languageQueued = false;
+    let firstChunkReady = false;
+
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items
+        .map((item) => item.str)
+        .filter(Boolean)
+        .join(" ");
+      const addedChunks = appendPreparedPage(pageText);
+
+      if (addedChunks && !languageQueued) {
+        languageQueued = true;
+        const sample = textChunks.slice(0, 3).join(" ").slice(0, 1000);
+        void detectLanguageFromText(sample).then((language) => {
+          detectedLanguage = language;
+          state.language = detectedLanguage;
+          updateUI();
+        });
+      }
+
+      if (addedChunks && !firstChunkReady) {
+        firstChunkReady = true;
+        if (pendingStartPlayback) {
+          pendingStartPlayback = false;
+          playbackToken += 1;
+          void speakCurrentChunk(playbackToken);
+        } else {
+          setStatus("idle", `${file.name} is ready. Preparing remaining pages...`);
+        }
+      }
+    }
+
+    preparationComplete = true;
+    isPreparingText = false;
 
     if (!textChunks.length) {
       setStatus("error", "No selectable text found. This PDF might be scanned.");
       return;
     }
 
-    const sample = textChunks.slice(0, 3).join(" ").slice(0, 1000);
-    detectedLanguage = await detectLanguageFromText(sample);
-    state.language = detectedLanguage;
-    setStatus("idle", `${file.name} is ready to read.`);
+    if (!detectedLanguage) {
+      const sample = textChunks.slice(0, 3).join(" ").slice(0, 1000);
+      detectedLanguage = await detectLanguageFromText(sample);
+      state.language = detectedLanguage;
+    }
+
+    if (state.status !== "reading" && state.status !== "paused") {
+      setStatus("idle", `${file.name} is ready to read.`);
+    }
   } catch (error) {
     const details = error && error.message ? error.message : "Unable to prepare the PDF.";
     currentFileBuffer = null;
+    isPreparingText = false;
+    preparationComplete = false;
     setStatus("error", details);
   }
 }
@@ -443,9 +510,7 @@ async function handleAudioEnded(token) {
   currentChunkIndex += 1;
 
   if (currentChunkIndex >= textChunks.length) {
-    state.currentChunk = textChunks.length;
-    cleanupCurrentAudio();
-    setStatus("finished", `${state.fileName || "PDF"} finished.`);
+    await waitForPreparedChunks(token);
     return;
   }
 
@@ -467,8 +532,7 @@ async function speakCurrentChunk(token = playbackToken) {
   }
 
   if (currentChunkIndex >= textChunks.length) {
-    cleanupCurrentAudio();
-    setStatus("finished", `${state.fileName || "PDF"} finished.`);
+    await waitForPreparedChunks(token);
     return;
   }
 
@@ -530,6 +594,12 @@ async function speakCurrentChunk(token = playbackToken) {
 }
 
 async function startPlayback() {
+  if (!textChunks.length && isPreparingText) {
+    pendingStartPlayback = true;
+    setStatus("loading", "Preparing first pages...");
+    return;
+  }
+
   if (!textChunks.length) {
     setStatus("error", "Upload a PDF with selectable text first.");
     return;
@@ -539,6 +609,7 @@ async function startPlayback() {
     currentChunkIndex = 0;
   }
 
+  pendingStartPlayback = false;
   playbackToken += 1;
   await speakCurrentChunk(playbackToken);
 }

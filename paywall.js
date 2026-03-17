@@ -80,7 +80,7 @@ async function loadSubscriptionStatus() {
 
     if (currentSubscription.active) {
       const planName =
-        currentSubscription.plan?.planId === "yearly" ? "Yearly plan" : "Monthly plan";
+        currentSubscription.plan?.planId === "annual" ? "Yearly plan" : "Monthly plan";
       setStatus(`Subscription active. Current plan: ${planName}.`, true);
       return;
     }

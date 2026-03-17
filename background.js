@@ -1,27 +1,35 @@
-const LOCAL_TTS_ENDPOINTS = [
-  "https://api.pdftext2speech.com/ext/tts",
-  "http://127.0.0.1:8787/tts",
-  "http://localhost:8787/tts",
+const REMOTE_API_BASE_URL = "https://pdftext2speech.com";
+
+const TTS_ENDPOINTS = [
+  `${REMOTE_API_BASE_URL}/tts`,
 ];
 
-const LOCAL_BILLING_ENDPOINTS = [
-  "https://api.pdftext2speech.com/ext",
-  "http://127.0.0.1:8787",
-  "http://localhost:8787",
+const BILLING_ENDPOINTS = [
+  REMOTE_API_BASE_URL,
 ];
 
-const PAYWALL_LIMIT_SECONDS = 5;
-const PAYWALL_USED_SECONDS_KEY = "paywallUsedSeconds";
-const INSTALL_ID_KEY = "installId";
+const FREE_MINUTES = 5;
+const DEVICE_TOKEN_KEY = "deviceToken";
 
 const SUBSCRIPTION_CACHE_MS = 30 * 1000;
 let subscriptionCache = {
-  installId: "",
+  deviceToken: "",
   active: false,
   status: "none",
   plan: null,
+  minutesLeft: FREE_MINUTES,
   timestamp: 0,
 };
+
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason !== "install") {
+    return;
+  }
+
+  chrome.tabs.create({
+    url: chrome.runtime.getURL("welcome.html"),
+  });
+});
 
 function readStorage(keys) {
   return new Promise((resolve) => {
@@ -36,33 +44,40 @@ function writeStorage(payload) {
 }
 
 async function readUsageSeconds() {
-  const result = await readStorage([PAYWALL_USED_SECONDS_KEY]);
-  const value = Number(result?.[PAYWALL_USED_SECONDS_KEY]);
-  return Number.isFinite(value) && value > 0 ? value : 0;
+  return 0;
 }
 
 async function writeUsageSeconds(value) {
-  await writeStorage({ [PAYWALL_USED_SECONDS_KEY]: value });
+  return value;
 }
 
-async function getOrCreateInstallId() {
-  const result = await readStorage([INSTALL_ID_KEY]);
-  const existing = typeof result?.[INSTALL_ID_KEY] === "string" ? result[INSTALL_ID_KEY] : "";
+async function getOrCreateDeviceToken() {
+  const result = await readStorage([DEVICE_TOKEN_KEY]);
+  const existing = typeof result?.[DEVICE_TOKEN_KEY] === "string" ? result[DEVICE_TOKEN_KEY] : "";
   if (existing) {
     return existing;
   }
-  const created = (self.crypto && self.crypto.randomUUID && self.crypto.randomUUID()) ||
-    `install_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  await writeStorage({ [INSTALL_ID_KEY]: created });
+  const created =
+    (self.crypto && self.crypto.randomUUID && self.crypto.randomUUID()) ||
+    `device_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  await writeStorage({ [DEVICE_TOKEN_KEY]: created });
   return created;
 }
 
 async function fetchJsonFromEndpoints(pathname, options = {}) {
+  const deviceToken = await getOrCreateDeviceToken();
   let lastError = null;
 
-  for (const baseUrl of LOCAL_BILLING_ENDPOINTS) {
+  for (const baseUrl of BILLING_ENDPOINTS) {
     try {
-      const response = await fetch(`${baseUrl}${pathname}`, options);
+      const headers = {
+        ...(options.headers || {}),
+        "x-device-token": deviceToken,
+      };
+      const response = await fetch(`${baseUrl}${pathname}`, {
+        ...options,
+        headers,
+      });
       const text = await response.text();
       let data = {};
       if (text) {
@@ -81,43 +96,46 @@ async function fetchJsonFromEndpoints(pathname, options = {}) {
     }
   }
 
-  throw new Error(lastError?.message || "Local billing server is unreachable.");
+  throw new Error(lastError?.message || "Remote billing server is unreachable.");
 }
 
 async function getSubscriptionStatus(forceRefresh = false) {
-  const installId = await getOrCreateInstallId();
+  const deviceToken = await getOrCreateDeviceToken();
   const now = Date.now();
 
   if (
     !forceRefresh &&
-    subscriptionCache.installId === installId &&
+    subscriptionCache.deviceToken === deviceToken &&
     now - subscriptionCache.timestamp < SUBSCRIPTION_CACHE_MS
   ) {
     return {
-      installId,
+      deviceToken,
       active: subscriptionCache.active,
       status: subscriptionCache.status,
       plan: subscriptionCache.plan,
+      minutesLeft: subscriptionCache.minutesLeft,
     };
   }
 
-  const data = await fetchJsonFromEndpoints(
-    `/stripe/subscription-status?installId=${encodeURIComponent(installId)}`
-  );
+  const data = await fetchJsonFromEndpoints("/me");
 
   subscriptionCache = {
-    installId,
-    active: !!data.active,
-    status: data.status || "none",
-    plan: data.plan || null,
+    deviceToken,
+    active: !!data.paid,
+    status: data.subscriptionStatus || "none",
+    plan: data.plan ? { planId: data.plan } : null,
+    minutesLeft: Number.isFinite(Number(data.minutesLeft))
+      ? Math.max(0, Number(data.minutesLeft))
+      : FREE_MINUTES,
     timestamp: now,
   };
 
   return {
-    installId,
+    deviceToken,
     active: subscriptionCache.active,
     status: subscriptionCache.status,
     plan: subscriptionCache.plan,
+    minutesLeft: subscriptionCache.minutesLeft,
   };
 }
 
@@ -127,7 +145,7 @@ async function getPlaybackQuota() {
   if (sub.active) {
     return {
       usedSeconds: 0,
-      limitSeconds: PAYWALL_LIMIT_SECONDS,
+      limitSeconds: Number.MAX_SAFE_INTEGER,
       remainingSeconds: Number.MAX_SAFE_INTEGER,
       isLimited: false,
       isSubscribed: true,
@@ -136,33 +154,23 @@ async function getPlaybackQuota() {
     };
   }
 
-  const usedSeconds = await readUsageSeconds();
-  const remainingSeconds = Math.max(0, PAYWALL_LIMIT_SECONDS - usedSeconds);
+  const minutesLeft = Number.isFinite(Number(sub.minutesLeft))
+    ? Math.max(0, Number(sub.minutesLeft))
+    : 0;
+  const remainingSeconds = minutesLeft * 60;
   return {
-    usedSeconds,
-    limitSeconds: PAYWALL_LIMIT_SECONDS,
+    usedSeconds: 0,
+    limitSeconds: FREE_MINUTES * 60,
     remainingSeconds,
     isLimited: remainingSeconds <= 0,
     isSubscribed: false,
     subscriptionStatus: "none",
-    plan: null,
+    plan: sub.plan || null,
   };
 }
 
 async function addPlaybackUsage(rawSeconds) {
-  const quota = await getPlaybackQuota();
-  if (quota.isSubscribed) {
-    return quota;
-  }
-
-  const delta = Number(rawSeconds);
-  if (!Number.isFinite(delta) || delta <= 0) {
-    return getPlaybackQuota();
-  }
-
-  const usedSeconds = await readUsageSeconds();
-  const nextUsedSeconds = usedSeconds + delta;
-  await writeUsageSeconds(nextUsedSeconds);
+  void rawSeconds;
   return getPlaybackQuota();
 }
 
@@ -180,21 +188,23 @@ async function synthesizeSpeech({ text, speed, language }) {
     throw new Error("TTS text is empty.");
   }
 
+  const deviceToken = await getOrCreateDeviceToken();
   let lastError = null;
-  for (const endpoint of LOCAL_TTS_ENDPOINTS) {
+  for (const endpoint of TTS_ENDPOINTS) {
     try {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "x-device-token": deviceToken,
         },
-        body: JSON.stringify({ text, speed, language }),
+        body: JSON.stringify({ input: text, speed, language }),
       });
 
       if (!response.ok) {
         const details = await response.text().catch(() => "");
         throw new Error(
-          `Local TTS returned ${response.status}${details ? `: ${details}` : ""}`
+          `Remote TTS returned ${response.status}${details ? `: ${details}` : ""}`
         );
       }
 
@@ -211,21 +221,22 @@ async function synthesizeSpeech({ text, speed, language }) {
   const message =
     lastError && lastError.message
       ? lastError.message
-      : "Unable to reach local TTS service on port 8787.";
+      : "Unable to reach the remote TTS service.";
   throw new Error(message);
 }
 
 async function createCheckoutSession(planId, returnUrl) {
-  const installId = await getOrCreateInstallId();
-  const data = await fetchJsonFromEndpoints("/stripe/checkout-session", {
+  void returnUrl;
+  const deviceToken = await getOrCreateDeviceToken();
+  const data = await fetchJsonFromEndpoints("/checkout", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ installId, planId, returnUrl }),
+    body: JSON.stringify({ device_token: deviceToken, plan: planId }),
   });
   return {
-    installId,
+    deviceToken,
     url: data.url,
-    sessionId: data.sessionId,
+    sessionId: data.sessionId || null,
   };
 }
 
