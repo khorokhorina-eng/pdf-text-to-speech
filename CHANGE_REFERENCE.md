@@ -1,87 +1,119 @@
 # FocusTrace Change Reference
 
-This file is the working reference for future changes to the Chrome extension and related website.
+This file is the current working reference for the extension, the publish bundle, and the matching backend behavior.
 
-## Production Setup
+## Source Of Truth
 
-- Extension folder: [FocusTrace](/Users/n.khorokhorina/Self/FocusTrace)
+- Extension repo: [FocusTrace](/Users/n.khorokhorina/Self/FocusTrace)
 - Production domain: `https://pdftext2speech.com`
-- Public pages:
-  - `https://pdftext2speech.com/`
-  - `https://pdftext2speech.com/pricing`
-  - `https://pdftext2speech.com/support`
-  - `https://pdftext2speech.com/privacy`
+- Privacy policy: `https://pdftext2speech.com/privacy`
 - Support email: `support@pdftext2speech.com`
+- Current backend code in this repo: [server.js](/Users/n.khorokhorina/Self/FocusTrace/server.js)
 
-## Important Architecture Notes
+## Current Product Behavior
 
-- The live production API used by the extension is `https://pdftext2speech.com`.
-- The extension sends extracted PDF text to the backend for TTS generation.
-- The backend uses OpenAI for speech generation.
-- The product includes `5` free minutes, then paid listening through Stripe.
-- The server currently in real use on Hetzner is the existing backend at `/root/FocusTrace/ai-server`.
-- Do not assume `/var/www/Self/FocusTrace/server.js` is the production backend. The extension was aligned to the existing server API instead.
+- Users get `5` free minutes without registration.
+- TTS requests are sent to `https://pdftext2speech.com/tts`.
+- Google sign-in is the only auth flow.
+- Checkout requires sign-in before Stripe.
+- Paid quotas are enforced server-side:
+  - monthly: `300` minutes per billing period
+  - annual: `3600` minutes (`60` hours) per billing period
 
-## Current API Contract Used by the Extension
+## Current API Contract
 
+- `GET /health`
 - `GET /me`
+- `GET /auth/me`
+- `GET /auth/google/start`
+- `GET /auth/google/callback`
+- `POST /auth/logout`
 - `POST /tts`
 - `POST /checkout`
-- `POST /portal`
+- `POST /stripe/checkout-session`
+- `GET /stripe/subscription-status`
+- `POST /stripe/webhook`
 
-The extension must send a device token with requests:
+The extension must send the device token with backend requests:
 
-- Header: `x-device-token`
+- header: `x-device-token`
 
-## Extension Behavior That Must Stay True
+## Current Extension Notes
 
-- Reads text from PDFs opened in the browser or from local PDF files.
-- Sends extracted text to `pdftext2speech.com` for audio generation.
-- Uses a stored device token for usage limits and subscription state.
-- Shows a free trial limit of `5` minutes, then requires payment.
-- Uses Stripe for billing flows.
+- Main runtime files:
+  - [manifest.json](/Users/n.khorokhorina/Self/FocusTrace/manifest.json)
+  - [background.js](/Users/n.khorokhorina/Self/FocusTrace/background.js)
+  - [popup.html](/Users/n.khorokhorina/Self/FocusTrace/popup.html)
+  - [popup.js](/Users/n.khorokhorina/Self/FocusTrace/popup.js)
+  - [paywall.html](/Users/n.khorokhorina/Self/FocusTrace/paywall.html)
+  - [paywall.js](/Users/n.khorokhorina/Self/FocusTrace/paywall.js)
+- Paywall copy must not say `Unlimited listening` or `Unlimited playback`.
+- After successful sign-in, the Google CTA and pre-checkout auth prompt should be hidden; only the signed-in state remains visible.
+- The popup and paywall must stay aligned with the backend quota model.
 
-## Manifest / Review Notes
+## Current Backend Notes
 
-- Keep permissions minimal.
-- `activeTab` was intentionally removed and should not be reintroduced unless there is a real product need.
-- Host access is needed for:
-  - browser-opened PDF files
-  - local PDF files
-  - `pdftext2speech.com` API access
+- Required env:
+  - `OPENAI_API_KEY`
+  - `STRIPE_SECRET_KEY`
+  - `STRIPE_WEBHOOK_SECRET`
+  - `PUBLIC_BASE_URL`
+- Supported Stripe price env names:
+  - `STRIPE_PRICE_MONTHLY` or `STRIPE_MONTHLY_PRICE_ID`
+  - `STRIPE_PRICE_ANNUAL` or `STRIPE_YEARLY_PRICE_ID`
+- Google OAuth env:
+  - `GOOGLE_OAUTH_CLIENT_ID`
+  - `GOOGLE_OAUTH_CLIENT_SECRET`
+- Optional quota env:
+  - `FREE_MINUTES` default `5`
+  - `CHAR_PER_MINUTE` default `900`
+  - `MONTHLY_MINUTES` default `300`
+  - `ANNUAL_MINUTES` default `3600`
+
+## Static Site Notes
+
+- Static site source: [site](/Users/n.khorokhorina/Self/FocusTrace/site)
+- Important public pages:
+  - `/`
+  - `/pricing`
+  - `/support`
+  - `/privacy`
+
+## Chrome Web Store Notes
+
+- Keep `storage` permission.
+- Keep host permissions only for:
+  - browser-opened PDFs
+  - local PDFs
+  - `pdftext2speech.com`
+- Do not reintroduce `activeTab` unless the implementation truly needs it.
 - The extension does not use remote code execution.
-- Privacy policy URL:
-  - `https://pdftext2speech.com/privacy`
 
-## Website Notes
+## Publish Bundle
 
-- Static site source is in [site](/Users/n.khorokhorina/Self/FocusTrace/site)
-- Files:
-  - [index.html](/Users/n.khorokhorina/Self/FocusTrace/site/index.html)
-  - [pricing.html](/Users/n.khorokhorina/Self/FocusTrace/site/pricing.html)
-  - [support.html](/Users/n.khorokhorina/Self/FocusTrace/site/support.html)
-  - [privacy.html](/Users/n.khorokhorina/Self/FocusTrace/site/privacy.html)
-  - [site.css](/Users/n.khorokhorina/Self/FocusTrace/site/site.css)
-- These files are intended to be served by `nginx` as static pages.
+- Build a clean zip from the contents of [FocusTrace](/Users/n.khorokhorina/Self/FocusTrace), not from the parent folder.
+- Exclude:
+  - `server.js`
+  - `package.json`
+  - `package-lock.json`
+  - `.env`
+  - `.env.example`
+  - `site/`
+  - `PUBLISHING_COPY.md`
+  - `.gitignore`
+  - scratch files such as `ai-server-live.js`
+- Keep the required packaged `pdfjs` assets referenced by the manifest and popup:
+  - `node_modules/pdfjs-dist/build/pdf.min.js`
+  - `node_modules/pdfjs-dist/build/pdf.worker.min.js`
+- Current bundle name:
+  - `/Users/n.khorokhorina/Self/FocusTrace-chrome-web-store-final.zip`
 
-## Before Changing the Extension
-
-Check these first:
-
-1. Does the change affect the live backend contract (`/me`, `/tts`, `/checkout`, `/portal`)?
-2. Does the change alter what user data is processed or disclosed?
-3. Does the change require new permissions or broader host access?
-4. Does the change affect Chrome Web Store listing accuracy?
-5. Does the change affect the free `5` minute limit or Stripe paywall behavior?
-
-## After Changing the Extension
-
-Run this checklist:
+## Before Shipping Changes
 
 1. Reload the unpacked extension in `chrome://extensions/`.
-2. Test a browser-opened PDF.
-3. Test a local PDF file.
-4. Confirm TTS still works against `https://pdftext2speech.com`.
-5. Confirm paywall and checkout still open correctly.
-6. Re-check `https://pdftext2speech.com/privacy` if privacy-related text changed.
-7. If store-relevant behavior changed, update listing text and review answers.
+2. Test a browser PDF.
+3. Test a local PDF.
+4. Test free-trial depletion on a fresh device token.
+5. Test Google sign-in.
+6. Test Stripe checkout gating after sign-in.
+7. Re-check `https://pdftext2speech.com/privacy` if data flow text changed.

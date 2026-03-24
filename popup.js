@@ -15,6 +15,14 @@ const closePaywallBtn = document.getElementById("closePaywall");
 const paywallStatusEl = document.getElementById("paywallStatus");
 const continueCheckoutBtn = document.getElementById("continueCheckout");
 const planCardEls = Array.from(document.querySelectorAll(".plan-card"));
+const accountStateEl = document.getElementById("accountState");
+const accountActionBtn = document.getElementById("accountAction");
+const authMessageEl = document.getElementById("authMessage");
+const authCopyEl = document.getElementById("authCopy");
+const authSignedInEl = document.getElementById("authSignedIn");
+const authGoogleBtn = document.getElementById("authGoogle");
+const authSignedInTextEl = document.getElementById("authSignedInText");
+const authSignOutBtn = document.getElementById("authSignOut");
 
 const state = {
   status: "idle",
@@ -41,6 +49,7 @@ let preparationComplete = false;
 let pendingStartPlayback = false;
 let selectedPlanId = "annual";
 let currentSubscription = { active: false, plan: null };
+let authState = { signedIn: false, email: "", method: null };
 
 const PLAN_META = {
   monthly: {
@@ -89,9 +98,16 @@ function updateUI() {
   speedSelect.disabled = state.status === "loading";
   const activePlanId = currentSubscription?.plan?.planId || "";
   const isCurrentPlan = currentSubscription?.active && activePlanId === selectedPlanId;
-  continueCheckoutBtn.textContent =
-    isCurrentPlan ? "Current plan active" : PLAN_META[selectedPlanId]?.buttonText || "Continue";
+  continueCheckoutBtn.textContent = isCurrentPlan
+    ? "Current plan active"
+    : authState.signedIn
+    ? PLAN_META[selectedPlanId]?.buttonText || "Continue"
+    : "Sign in to continue";
   continueCheckoutBtn.disabled = isCurrentPlan;
+  accountStateEl.textContent = authState.signedIn
+    ? `Signed in as ${authState.email}`
+    : "Not signed in";
+  accountActionBtn.textContent = authState.signedIn ? "Manage" : "Sign in";
 }
 
 function cleanupCurrentAudio() {
@@ -288,6 +304,65 @@ function setPaywallStatus(text, ok = false) {
   paywallStatusEl.style.color = ok ? "#24553a" : "#6f665c";
 }
 
+function updateAuthUI() {
+  authCopyEl.classList.toggle("hidden", authState.signedIn);
+  authGoogleBtn.classList.toggle("hidden", authState.signedIn);
+  authSignedInEl.classList.toggle("hidden", !authState.signedIn);
+  authSignedInTextEl.textContent = authState.signedIn
+    ? `Signed in as ${authState.email}`
+    : "";
+  authMessageEl.textContent = authState.signedIn
+    ? ""
+    : "Use your 5 free minutes first. Sign in with Google when you want to buy a plan.";
+  updateUI();
+}
+
+async function loadAuthState() {
+  try {
+    const result = await sendRuntimeMessage({ type: "getAuthState" });
+    authState = {
+      signedIn: !!result.signedIn,
+      email: result.email || "",
+      method: result.method || null,
+    };
+  } catch (_error) {
+    authState = { signedIn: false, email: "", method: null };
+  }
+  updateAuthUI();
+}
+
+async function signInWithGoogle() {
+  authGoogleBtn.disabled = true;
+  authGoogleBtn.textContent = "Opening Google...";
+  try {
+    await sendRuntimeMessage({
+      type: "startGoogleSignIn",
+      returnUrl: chrome.runtime.getURL("paywall.html"),
+    });
+    setPaywallStatus("Complete Google sign-in in the opened tab, then return here.");
+  } catch (error) {
+    setPaywallStatus(error.message || "Unable to start Google sign-in.");
+  } finally {
+    authGoogleBtn.disabled = false;
+    authGoogleBtn.textContent = "Continue with Google";
+  }
+}
+
+async function signOutAccount() {
+  try {
+    const result = await sendRuntimeMessage({ type: "signOut" });
+    authState = {
+      signedIn: !!result.signedIn,
+      email: result.email || "",
+      method: result.method || null,
+    };
+    setPaywallStatus("Signed out. Sign in again before checkout.");
+  } catch (error) {
+    setPaywallStatus(error.message || "Unable to sign out.");
+  }
+  updateAuthUI();
+}
+
 function renderPaywallSelection() {
   planCardEls.forEach((card) => {
     const planId = card.dataset.planId || "";
@@ -308,7 +383,11 @@ async function loadSubscriptionStatus() {
       }
       setPaywallStatus("Subscription active on this device.", true);
     } else {
-      setPaywallStatus("Unlimited listening with one plan.");
+    setPaywallStatus(
+      authState.signedIn
+        ? "No active subscription detected."
+        : "Sign in before checkout to keep your paid plan attached to your account."
+    );
     }
     renderPaywallSelection();
   } catch (error) {
@@ -318,7 +397,9 @@ async function loadSubscriptionStatus() {
 
 function openPaywall() {
   paywallModal.classList.remove("hidden");
-  loadSubscriptionStatus();
+  void loadAuthState().then(() => {
+    loadSubscriptionStatus();
+  });
 }
 
 function closePaywall() {
@@ -326,6 +407,13 @@ function closePaywall() {
 }
 
 async function openCheckoutForSelectedPlan() {
+  await loadAuthState();
+
+  if (!authState.signedIn) {
+    setPaywallStatus("Sign in before continuing to Stripe.");
+    return;
+  }
+
   continueCheckoutBtn.disabled = true;
   setPaywallStatus("Creating Stripe Checkout session...");
   try {
@@ -690,6 +778,10 @@ upgradeBtn.addEventListener("click", () => {
   openPaywall();
 });
 
+accountActionBtn.addEventListener("click", () => {
+  openPaywall();
+});
+
 limitUpgradeBtn.addEventListener("click", () => {
   openPaywall();
 });
@@ -706,6 +798,14 @@ continueCheckoutBtn.addEventListener("click", () => {
   openCheckoutForSelectedPlan();
 });
 
+authGoogleBtn.addEventListener("click", () => {
+  signInWithGoogle();
+});
+
+authSignOutBtn.addEventListener("click", () => {
+  signOutAccount();
+});
+
 planCardEls.forEach((card) => {
   card.addEventListener("click", () => {
     selectedPlanId = card.dataset.planId || selectedPlanId;
@@ -714,3 +814,4 @@ planCardEls.forEach((card) => {
 });
 
 updateUI();
+void loadAuthState();

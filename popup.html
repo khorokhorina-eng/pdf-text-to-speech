@@ -45,11 +45,19 @@
         </div>
       </section>
 
-      <button id="limitUpgrade" class="upgrade-btn hidden">Upgrade for unlimited listening</button>
+      <button id="limitUpgrade" class="upgrade-btn hidden">Upgrade to continue listening</button>
 
       <p class="mini-disclosure">
         PDF text is sent to pdftext2speech.com and OpenAI to generate audio.
       </p>
+
+      <section class="account-panel">
+        <div class="account-copy">
+          <p class="account-label">Account</p>
+          <p id="accountState" class="account-state">Not signed in</p>
+        </div>
+        <button id="accountAction" class="account-btn">Sign in</button>
+      </section>
 
       <div class="footer-links">
         <button id="contact" class="link-btn">Contact us</button>
@@ -59,12 +67,25 @@
       <div class="paywall-sheet">
         <div class="paywall-top">
           <div>
-            <p class="paywall-kicker">Unlimited listening</p>
+            <p class="paywall-kicker">Listening plans</p>
             <h2 class="paywall-title">Choose your plan</h2>
           </div>
           <button id="closePaywall" class="paywall-close" aria-label="Close paywall">×</button>
         </div>
         <p id="paywallStatus" class="paywall-status">Checking subscription status...</p>
+        <section class="auth-panel">
+          <div id="authCopy" class="auth-copy">
+            <p class="auth-label">Sign in before checkout</p>
+            <p id="authMessage" class="auth-message">
+              Use your 5 free minutes first. Sign in with Google when you want to buy a plan.
+            </p>
+          </div>
+          <button id="authGoogle" class="auth-google">Continue with Google</button>
+          <div id="authSignedIn" class="auth-signed-in hidden">
+            <p id="authSignedInText" class="auth-signed-in-text">Signed in as</p>
+            <button id="authSignOut" class="link-btn auth-signout">Sign out</button>
+          </div>
+        </section>
         <div id="paywallPlans" class="paywall-plans">
           <button class="plan-card selected" data-plan-id="monthly">
             <span class="plan-main">

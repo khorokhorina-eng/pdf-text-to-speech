@@ -10,6 +10,7 @@ const BILLING_ENDPOINTS = [
 
 const FREE_MINUTES = 5;
 const DEVICE_TOKEN_KEY = "deviceToken";
+const AUTH_SESSION_KEY = "authSession";
 
 const SUBSCRIPTION_CACHE_MS = 30 * 1000;
 let subscriptionCache = {
@@ -62,6 +63,70 @@ async function getOrCreateDeviceToken() {
     `device_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   await writeStorage({ [DEVICE_TOKEN_KEY]: created });
   return created;
+}
+
+async function getAuthState() {
+  const deviceToken = await getOrCreateDeviceToken();
+  const cached = await readStorage([AUTH_SESSION_KEY]);
+  const cachedSession = cached?.[AUTH_SESSION_KEY];
+
+  try {
+    const data = await fetchJsonFromEndpoints(`/auth/me?device_token=${encodeURIComponent(deviceToken)}`);
+    const session = {
+      email: typeof data?.email === "string" ? data.email.trim() : "",
+      method: data?.method || null,
+      signedInAt: data?.signedInAt || null,
+    };
+    await writeStorage({ [AUTH_SESSION_KEY]: session.email ? session : null });
+    return {
+      signedIn: Boolean(session.email),
+      email: session.email,
+      method: session.method,
+      signedInAt: session.signedInAt,
+      deviceToken,
+    };
+  } catch (_error) {
+    const email = typeof cachedSession?.email === "string" ? cachedSession.email.trim() : "";
+    return {
+      signedIn: Boolean(email),
+      email,
+      method: email ? cachedSession?.method || "email" : null,
+      signedInAt: cachedSession?.signedInAt || null,
+      deviceToken,
+    };
+  }
+}
+
+async function signOut() {
+  const deviceToken = await getOrCreateDeviceToken();
+  try {
+    await fetchJsonFromEndpoints("/auth/logout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_token: deviceToken }),
+    });
+  } catch (_error) {
+    // Clear local state even if the remote logout endpoint is not available.
+  }
+  await writeStorage({ [AUTH_SESSION_KEY]: null });
+  return {
+    signedIn: false,
+    email: "",
+    method: null,
+    signedInAt: null,
+    deviceToken,
+  };
+}
+
+async function startGoogleSignIn(returnUrl) {
+  const deviceToken = await getOrCreateDeviceToken();
+  const target = new URL(`${REMOTE_API_BASE_URL}/auth/google/start`);
+  target.searchParams.set("device_token", deviceToken);
+  if (typeof returnUrl === "string" && returnUrl.trim()) {
+    target.searchParams.set("return_url", returnUrl.trim());
+  }
+  await chrome.tabs.create({ url: target.toString() });
+  return { started: true, deviceToken };
 }
 
 async function fetchJsonFromEndpoints(pathname, options = {}) {
@@ -141,23 +206,25 @@ async function getSubscriptionStatus(forceRefresh = false) {
 
 async function getPlaybackQuota() {
   const sub = await getSubscriptionStatus(false).catch(() => ({ active: false }));
+  const minutesLeft = Number.isFinite(Number(sub.minutesLeft))
+    ? Math.max(0, Number(sub.minutesLeft))
+    : sub.active
+    ? Number.MAX_SAFE_INTEGER
+    : 0;
+  const remainingSeconds = minutesLeft * 60;
 
   if (sub.active) {
     return {
       usedSeconds: 0,
-      limitSeconds: Number.MAX_SAFE_INTEGER,
-      remainingSeconds: Number.MAX_SAFE_INTEGER,
-      isLimited: false,
+      limitSeconds: remainingSeconds,
+      remainingSeconds,
+      isLimited: remainingSeconds <= 0,
       isSubscribed: true,
       subscriptionStatus: sub.status || "active",
       plan: sub.plan || null,
     };
   }
 
-  const minutesLeft = Number.isFinite(Number(sub.minutesLeft))
-    ? Math.max(0, Number(sub.minutesLeft))
-    : 0;
-  const remainingSeconds = minutesLeft * 60;
   return {
     usedSeconds: 0,
     limitSeconds: FREE_MINUTES * 60,
@@ -228,13 +295,23 @@ async function synthesizeSpeech({ text, speed, language }) {
 async function createCheckoutSession(planId, returnUrl) {
   void returnUrl;
   const deviceToken = await getOrCreateDeviceToken();
+  const authState = await getAuthState();
+
+  if (!authState.signedIn || !authState.email) {
+    throw new Error("Sign in required before checkout.");
+  }
+
   const data = await fetchJsonFromEndpoints("/checkout", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ device_token: deviceToken, plan: planId }),
+    body: JSON.stringify({
+      device_token: deviceToken,
+      plan: planId,
+    }),
   });
   return {
     deviceToken,
+    email: authState.email,
     url: data.url,
     sessionId: data.sessionId || null,
   };
@@ -273,6 +350,39 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => {
         const errorMessage =
           error && error.message ? error.message : "Failed to create checkout session.";
+        sendResponse({ ok: false, error: errorMessage });
+      });
+    return true;
+  }
+
+  if (message.type === "getAuthState") {
+    getAuthState()
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => {
+        const errorMessage =
+          error && error.message ? error.message : "Failed to read auth state.";
+        sendResponse({ ok: false, error: errorMessage });
+      });
+    return true;
+  }
+
+  if (message.type === "startGoogleSignIn") {
+    startGoogleSignIn(message.returnUrl)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => {
+        const errorMessage =
+          error && error.message ? error.message : "Failed to start Google sign-in.";
+        sendResponse({ ok: false, error: errorMessage });
+      });
+    return true;
+  }
+
+  if (message.type === "signOut") {
+    signOut()
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => {
+        const errorMessage =
+          error && error.message ? error.message : "Failed to sign out.";
         sendResponse({ ok: false, error: errorMessage });
       });
     return true;

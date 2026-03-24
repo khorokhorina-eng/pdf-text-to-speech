@@ -2,8 +2,15 @@ const statusEl = document.getElementById("status");
 const refreshBtn = document.getElementById("refresh");
 const closeBtn = document.getElementById("close");
 const planButtons = Array.from(document.querySelectorAll("button[data-plan-id]"));
+const authMessageEl = document.getElementById("authMessage");
+const authCopyEl = document.getElementById("authCopy");
+const authSignedInEl = document.getElementById("authSignedIn");
+const authGoogleBtn = document.getElementById("authGoogle");
+const authSignedInTextEl = document.getElementById("authSignedInText");
+const authSignOutBtn = document.getElementById("authSignOut");
 
 let currentSubscription = { active: false, plan: null };
+let authState = { signedIn: false, email: "", method: null };
 
 function setStatus(text, ok = false) {
   statusEl.textContent = text;
@@ -33,12 +40,65 @@ function updateButtons() {
     const planId = button.dataset.planId || "";
     const isCurrentPlan = currentSubscription?.active && activePlanId === planId;
     button.disabled = isCurrentPlan;
-    button.textContent = isCurrentPlan ? "Current plan" : "Upgrade";
+    button.textContent = isCurrentPlan
+      ? "Current plan"
+      : authState.signedIn
+      ? "Upgrade"
+      : "Sign in first";
   });
+}
+
+async function loadAuthState() {
+  const result = await sendMessage({ type: "getAuthState" });
+  authState = {
+    signedIn: !!result.signedIn,
+    email: result.email || "",
+    method: result.method || null,
+  };
+  authCopyEl.hidden = authState.signedIn;
+  authGoogleBtn.hidden = authState.signedIn;
+  authSignedInEl.hidden = !authState.signedIn;
+  authSignedInTextEl.textContent = authState.signedIn ? `Signed in as ${authState.email}` : "";
+  authMessageEl.textContent = authState.signedIn
+    ? ""
+    : "Use your 5 free minutes first. Sign in with Google when you want to buy a plan.";
+  updateButtons();
+}
+
+async function signInWithGoogle() {
+  authGoogleBtn.disabled = true;
+  authGoogleBtn.textContent = "Opening Google...";
+  try {
+    await sendMessage({
+      type: "startGoogleSignIn",
+      returnUrl: chrome.runtime.getURL("paywall.html"),
+    });
+    setStatus("Complete Google sign-in in the opened tab, then refresh this page.");
+  } catch (error) {
+    setStatus(error.message || "Unable to start Google sign-in.");
+  } finally {
+    authGoogleBtn.disabled = false;
+    authGoogleBtn.textContent = "Continue with Google";
+  }
+}
+
+async function signOut() {
+  try {
+    await sendMessage({ type: "signOut" });
+    await loadAuthState();
+    setStatus("Signed out. Sign in again before checkout.");
+  } catch (error) {
+    setStatus(error.message || "Unable to sign out.");
+  }
 }
 
 async function openCheckout(planId, button) {
   if (!planId) {
+    return;
+  }
+  await loadAuthState();
+  if (!authState.signedIn) {
+    setStatus("Sign in before continuing to Stripe.");
     return;
   }
 
@@ -74,6 +134,7 @@ async function loadSubscriptionStatus() {
   setStatus("Checking subscription status...");
 
   try {
+    await loadAuthState();
     const result = await sendMessage({ type: "refreshSubscriptionStatus" });
     currentSubscription = result || { active: false, plan: null };
     updateButtons();
@@ -85,7 +146,11 @@ async function loadSubscriptionStatus() {
       return;
     }
 
-    setStatus("No active subscription detected.");
+    setStatus(
+      authState.signedIn
+        ? "No active subscription detected."
+        : "Sign in before checkout to keep your paid plan attached to your account."
+    );
   } catch (error) {
     currentSubscription = { active: false, plan: null };
     updateButtons();
@@ -101,6 +166,14 @@ planButtons.forEach((button) => {
 
 refreshBtn.addEventListener("click", () => {
   loadSubscriptionStatus();
+});
+
+authGoogleBtn.addEventListener("click", () => {
+  signInWithGoogle();
+});
+
+authSignOutBtn.addEventListener("click", () => {
+  signOut();
 });
 
 closeBtn.addEventListener("click", () => {

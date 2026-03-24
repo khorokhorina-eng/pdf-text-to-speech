@@ -279,6 +279,53 @@ select {
   line-height: 1.35;
 }
 
+.account-panel {
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(255, 251, 245, 0.78);
+  box-shadow: 0 12px 28px rgba(67, 40, 19, 0.08);
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.account-copy {
+  min-width: 0;
+}
+
+.account-label,
+.auth-label {
+  margin: 0;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.account-state,
+.auth-message,
+.auth-signed-in-text {
+  margin: 4px 0 0;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+.account-btn {
+  min-height: 38px;
+  padding: 9px 12px;
+  border-radius: 999px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  color: var(--accent-deep);
+  white-space: nowrap;
+}
+
 .footer-links {
   display: flex;
   justify-content: flex-end;
@@ -321,6 +368,34 @@ select {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.auth-panel {
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  padding: 12px;
+  background: rgba(255, 251, 244, 0.84);
+  display: grid;
+  gap: 10px;
+}
+
+.auth-google {
+  min-height: 42px;
+  border-radius: 16px;
+  background: #fffdf9;
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.auth-signed-in {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.auth-signout {
+  white-space: nowrap;
 }
 
 .paywall-kicker {
