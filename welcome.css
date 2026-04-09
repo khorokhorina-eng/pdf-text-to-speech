@@ -32,6 +32,19 @@ body {
   margin-bottom: 24px;
 }
 
+.hero-title {
+  font-size: clamp(30px, 4vw, 40px);
+  line-height: 1.2;
+  margin-bottom: 6px;
+}
+
+.hero-subtitle {
+  font-size: clamp(18px, 2.2vw, 22px);
+  font-weight: 600;
+  margin: 0 0 16px;
+  color: var(--ink);
+}
+
 .secondary {
   margin-top: 52px;
 }
@@ -98,8 +111,11 @@ h2 {
 .illustration {
   display: block;
   width: 100%;
+  max-width: 100%;
   height: auto;
   border-radius: 18px;
+  max-height: 70vh;
+  object-fit: contain;
 }
 
 @media (max-width: 640px) {
