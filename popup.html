@@ -12,7 +12,9 @@
 
       <aside id="profileDrawer" class="profile-drawer" aria-hidden="true">
         <div class="drawer-head">
-          <div class="drawer-avatar">P</div>
+          <div class="drawer-avatar" aria-hidden="true">
+            <span class="avatar-glyph"></span>
+          </div>
           <button id="closeDrawer" class="icon-btn ghost-btn" aria-label="Close profile drawer">
             ×
           </button>
@@ -35,18 +37,17 @@
       <main class="panel-shell">
         <header class="panel-header">
           <button id="profileTrigger" class="profile-trigger" aria-label="Open profile drawer">
-            <span class="profile-trigger-icon">P</span>
+            <span class="profile-trigger-icon" aria-hidden="true">
+              <span class="avatar-glyph"></span>
+            </span>
           </button>
-          <div class="brand-block">
-            <p class="brand-name">PDF Text To Speech</p>
-            <p id="status" class="status-pill">Ready</p>
-          </div>
+          <span id="status" class="status-pill hidden">Ready</span>
+          <div class="header-spacer" aria-hidden="true"></div>
           <button id="backToReader" class="ghost-btn hidden">Back</button>
         </header>
 
         <section id="readerScreen" class="screen screen-active">
           <div class="hero-card">
-            <p class="eyebrow">Chrome Side Panel</p>
             <h1 class="hero-title">Choose PDF File To Start</h1>
             <p id="hint" class="hero-copy">Open a PDF and start listening inside the side panel.</p>
           </div>
@@ -85,16 +86,11 @@
           </section>
 
           <button id="limitUpgrade" class="upgrade-cta hidden">Upgrade to continue listening</button>
-
-          <p class="micro-copy">
-            PDF text is sent to pdftext2speech.com and OpenAI to generate audio.
-          </p>
         </section>
 
         <section id="paywallScreen" class="screen hidden">
           <div class="paywall-top">
             <div>
-              <p class="eyebrow">Genius Mode Locked</p>
               <h2 class="paywall-title">Unlock premium listening</h2>
             </div>
           </div>
@@ -109,10 +105,6 @@
               </p>
             </div>
             <button id="authGoogle" class="auth-google">Continue with Google</button>
-            <div id="authSignedIn" class="auth-signed-in hidden">
-              <p id="authSignedInText" class="auth-signed-in-text">Signed in as</p>
-              <button id="authSignOut" class="drawer-link-btn">Sign out</button>
-            </div>
           </section>
 
           <div class="billing-toggle" role="tablist" aria-label="Billing cadence">

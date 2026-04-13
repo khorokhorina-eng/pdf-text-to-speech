@@ -15,10 +15,7 @@ const continueCheckoutBtn = document.getElementById("continueCheckout");
 const accountActionBtn = document.getElementById("accountAction");
 const authMessageEl = document.getElementById("authMessage");
 const authCopyEl = document.getElementById("authCopy");
-const authSignedInEl = document.getElementById("authSignedIn");
 const authGoogleBtn = document.getElementById("authGoogle");
-const authSignedInTextEl = document.getElementById("authSignedInText");
-const authSignOutBtn = document.getElementById("authSignOut");
 const profileTriggerBtn = document.getElementById("profileTrigger");
 const closeDrawerBtn = document.getElementById("closeDrawer");
 const drawerBackdropEl = document.getElementById("drawerBackdrop");
@@ -697,10 +694,6 @@ function setPaywallStatus(text, ok = false) {
 function updateAuthUI() {
   authCopyEl.classList.toggle("hidden", authState.signedIn);
   authGoogleBtn.classList.toggle("hidden", authState.signedIn);
-  authSignedInEl.classList.toggle("hidden", !authState.signedIn);
-  authSignedInTextEl.textContent = authState.signedIn
-    ? `Signed in as ${authState.email}`
-    : "";
   authMessageEl.textContent = authState.signedIn
     ? ""
     : !currentSubscription?.active && getLiveRemainingSeconds() <= 0
@@ -1383,10 +1376,6 @@ continueCheckoutBtn.addEventListener("click", () => {
 
 authGoogleBtn.addEventListener("click", () => {
   void signInWithGoogle();
-});
-
-authSignOutBtn.addEventListener("click", () => {
-  void signOutAccount();
 });
 
 toggleMonthlyBtn.addEventListener("click", () => {
