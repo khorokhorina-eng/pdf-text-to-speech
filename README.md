@@ -9,7 +9,7 @@ Standalone repo for the PDF Text To Speech browser extension.
 
 ## Workflow
 
-Sync latest changes from upstream into local `main`:
+Rebase local `main` onto the latest `upstream/main`:
 
 ```sh
 ./scripts/sync-upstream.sh
@@ -31,3 +31,5 @@ git add .
 git commit -m "Describe change"
 ./scripts/push-origin.sh
 ```
+
+Keep your working tree clean before running the sync script.

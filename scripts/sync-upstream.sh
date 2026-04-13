@@ -4,6 +4,6 @@ set -euo pipefail
 
 git fetch upstream
 git checkout main
-git merge --ff-only upstream/main
+git rebase upstream/main
 
-echo "Local main is now aligned with upstream/main."
+echo "Local main was rebased onto upstream/main."
