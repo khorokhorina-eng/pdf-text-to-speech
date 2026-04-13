@@ -202,7 +202,7 @@ function sanitizeExtensionReturnUrl(value) {
 
   try {
     const parsed = new URL(trimmed);
-    if (parsed.protocol !== "chrome-extension:") {
+    if (!["chrome-extension:", "https:", "http:", "file:"].includes(parsed.protocol)) {
       return "";
     }
     parsed.hash = "";
@@ -980,6 +980,67 @@ function renderAuthCompletePage(title, message, returnUrl = "") {
 </html>`;
 }
 
+function renderAuthAutoClosePage(title, message) {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${title}</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: #f7f5f0;
+        color: #191919;
+        font-family: "Helvetica Neue", Arial, sans-serif;
+      }
+      .card {
+        width: 100%;
+        max-width: 420px;
+        padding: 28px 24px;
+        border-radius: 24px;
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        box-shadow: 0 20px 48px rgba(0, 0, 0, 0.08);
+        text-align: center;
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 28px;
+        line-height: 1.02;
+        letter-spacing: -0.04em;
+      }
+      p {
+        margin: 0;
+        color: #666;
+        font-size: 15px;
+        line-height: 1.5;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="card">
+      <h1>${title}</h1>
+      <p>${message}</p>
+    </section>
+    <script>
+      window.opener = null;
+      setTimeout(function () {
+        window.close();
+      }, 120);
+      setTimeout(function () {
+        document.body.innerHTML = '<section class="card"><h1>${title}</h1><p>You can return to the extension.</p></section>';
+      }, 900);
+    </script>
+  </body>
+</html>`;
+}
+
 async function handleGoogleStart(req, res, parsedUrl) {
   const deviceToken = getDeviceToken(req, parsedUrl, null);
   const returnUrl = sanitizeExtensionReturnUrl(parsedUrl.searchParams.get("return_url") || "");
@@ -1096,11 +1157,7 @@ async function handleGoogleCallback(_req, res, parsedUrl) {
     sendHtml(
       res,
       200,
-      renderAuthCompletePage(
-        "Google sign-in complete",
-        `Signed in as ${account.email}.`,
-        pending.returnUrl
-      )
+      renderAuthAutoClosePage("Google sign-in complete", `Signed in as ${account.email}.`)
     );
   } catch (error) {
     delete state.googleStates[oauthState];

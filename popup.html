@@ -7,116 +7,162 @@
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <main class="container">
-      <section class="hero">
-        <div class="hero-copy">
-          <p class="eyebrow">Browser Reader</p>
-          <h1 class="title">PDF Text to Speech</h1>
+    <div id="appShell" class="app-shell">
+      <div id="authToast" class="auth-toast hidden">Successfully signed in with Google.</div>
+
+      <aside id="profileDrawer" class="profile-drawer" aria-hidden="true">
+        <div class="drawer-head">
+          <div class="drawer-avatar">P</div>
+          <button id="closeDrawer" class="icon-btn ghost-btn" aria-label="Close profile drawer">
+            ×
+          </button>
         </div>
-        <button id="upgrade" class="chip-btn">Get plan</button>
-      </section>
-
-      <section class="status-panel">
-        <div class="status-head">
-          <p id="status" class="status">Ready</p>
-          <span class="live-dot" aria-hidden="true"></span>
+        <div class="drawer-block">
+          <p class="drawer-label">Account</p>
+          <p id="drawerEmail" class="drawer-email">Guest mode</p>
         </div>
-        <p id="hint" class="hint">Upload a .pdf file to start reading.</p>
-      </section>
-
-      <section id="trialEndedNotice" class="trial-ended hidden">
-        <p class="trial-ended-title">Trial version ended</p>
-        <p class="trial-ended-copy">Your free trial has ended. Pay for a plan to keep listening.</p>
-      </section>
-
-      <input id="fileInput" class="hidden-input" type="file" accept=".pdf,application/pdf" />
-
-      <button id="openFile" class="file-btn">Open PDF File</button>
-
-      <section class="controls-panel">
-        <button id="play" class="primary">Read Aloud</button>
-        <div class="controls-row">
-          <button id="pause" class="secondary" disabled>Pause</button>
-          <button id="stop" class="secondary" disabled>Stop</button>
-          <label class="speed">
-            <span class="speed-label">Speed</span>
-            <select id="speed" aria-label="Playback speed">
-              <option value="0.75">0.75x</option>
-              <option value="1" selected>1x</option>
-              <option value="1.25">1.25x</option>
-              <option value="1.5">1.5x</option>
-            </select>
-          </label>
+        <div class="drawer-plan-card">
+          <p class="drawer-label">Current plan</p>
+          <p id="drawerPlanName" class="drawer-plan-name">Free Trial</p>
+          <p id="drawerPlanMeta" class="drawer-plan-meta">Upgrade to unlock paid listening.</p>
         </div>
-      </section>
+        <button id="drawerUpgrade" class="drawer-upgrade-btn">Upgrade</button>
+        <button id="accountAction" class="drawer-link-btn">Sign in with Google</button>
+      </aside>
 
-      <button id="limitUpgrade" class="upgrade-btn hidden">Upgrade to continue listening</button>
+      <div id="drawerBackdrop" class="drawer-backdrop hidden"></div>
 
-      <p class="mini-disclosure">
-        PDF text is sent to pdftext2speech.com and OpenAI to generate audio.
-      </p>
-
-      <section class="account-panel">
-        <div class="account-copy">
-          <p class="account-label">Account</p>
-          <p id="accountState" class="account-state">Not signed in</p>
-        </div>
-        <button id="accountAction" class="account-btn">Sign in</button>
-      </section>
-
-      <div class="footer-links">
-        <button id="contact" class="link-btn">Contact us</button>
-      </div>
-    </main>
-    <section id="paywallModal" class="paywall-modal hidden">
-      <div class="paywall-sheet">
-        <div class="paywall-top">
-          <div>
-            <p class="paywall-kicker">Listening plans</p>
-            <h2 class="paywall-title">Choose your plan</h2>
+      <main class="panel-shell">
+        <header class="panel-header">
+          <button id="profileTrigger" class="profile-trigger" aria-label="Open profile drawer">
+            <span class="profile-trigger-icon">P</span>
+          </button>
+          <div class="brand-block">
+            <p class="brand-name">PDF Text To Speech</p>
+            <p id="status" class="status-pill">Ready</p>
           </div>
-          <button id="closePaywall" class="paywall-close" aria-label="Close paywall">×</button>
-        </div>
-        <p id="paywallStatus" class="paywall-status">Checking subscription status...</p>
-        <section class="auth-panel">
-          <div id="authCopy" class="auth-copy">
-            <p class="auth-label">Sign in before checkout</p>
-            <p id="authMessage" class="auth-message">
-              Use your 5 free minutes first. Sign in with Google when you want to buy a plan.
-            </p>
+          <button id="backToReader" class="ghost-btn hidden">Back</button>
+        </header>
+
+        <section id="readerScreen" class="screen screen-active">
+          <div class="hero-card">
+            <p class="eyebrow">Chrome Side Panel</p>
+            <h1 class="hero-title">Choose PDF File To Start</h1>
+            <p id="hint" class="hero-copy">Open a PDF and start listening inside the side panel.</p>
           </div>
-          <button id="authGoogle" class="auth-google">Continue with Google</button>
-          <div id="authSignedIn" class="auth-signed-in hidden">
-            <p id="authSignedInText" class="auth-signed-in-text">Signed in as</p>
-            <button id="authSignOut" class="link-btn auth-signout">Sign out</button>
-          </div>
+
+          <section id="trialEndedNotice" class="trial-banner hidden">
+            <p class="trial-banner-title">Free trial ended</p>
+            <p class="trial-banner-copy">Upgrade to continue listening to PDF files.</p>
+          </section>
+
+          <input id="fileInput" class="hidden-input" type="file" accept=".pdf,application/pdf" />
+
+          <button id="openFile" class="primary-action">Open PDF</button>
+
+          <section id="readerControls" class="reader-controls hidden">
+            <div class="file-meta">
+              <p class="file-meta-label">Current file</p>
+              <p id="fileNameLabel" class="file-meta-value">No file selected</p>
+            </div>
+
+            <button id="play" class="primary-action">Read Aloud</button>
+
+            <div class="secondary-grid">
+              <button id="pause" class="secondary-action" disabled>Pause</button>
+              <button id="stop" class="secondary-action" disabled>Stop</button>
+            </div>
+
+            <label class="speed-field">
+              <span class="speed-field-label">Speed</span>
+              <select id="speed" aria-label="Playback speed">
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+              </select>
+            </label>
+          </section>
+
+          <button id="limitUpgrade" class="upgrade-cta hidden">Upgrade to continue listening</button>
+
+          <p class="micro-copy">
+            PDF text is sent to pdftext2speech.com and OpenAI to generate audio.
+          </p>
         </section>
-        <div id="paywallPlans" class="paywall-plans">
-          <button class="plan-card selected" data-plan-id="monthly">
-            <span class="plan-main">
-              <span class="plan-name">1-MONTH PLAN</span>
-              <span class="plan-total">$9.99 per month</span>
-            </span>
-            <span class="plan-side">
-              <span class="plan-day-price">$0.33</span>
-              <span class="plan-day-period">PER DAY</span>
-            </span>
-          </button>
-          <button class="plan-card featured" data-plan-id="annual">
-            <span class="plan-badge accent-badge">MOST POPULAR</span>
-            <span class="plan-main">
-              <span class="plan-name">12-MONTH PLAN</span>
-              <span class="plan-total">$89.99 per year</span>
-            </span>
-            <span class="plan-side">
-              <span class="plan-day-price">$0.25</span>
-              <span class="plan-day-period">PER DAY</span>
-            </span>
-          </button>
+
+        <section id="paywallScreen" class="screen hidden">
+          <div class="paywall-top">
+            <div>
+              <p class="eyebrow">Genius Mode Locked</p>
+              <h2 class="paywall-title">Unlock premium listening</h2>
+            </div>
+          </div>
+
+          <p id="paywallStatus" class="paywall-status">Checking subscription status...</p>
+
+          <section class="auth-panel">
+            <div id="authCopy" class="auth-copy">
+              <p class="auth-title">Continue with Google</p>
+              <p id="authMessage" class="auth-message">
+                Sign in before checkout to attach your paid plan to this account.
+              </p>
+            </div>
+            <button id="authGoogle" class="auth-google">Continue with Google</button>
+            <div id="authSignedIn" class="auth-signed-in hidden">
+              <p id="authSignedInText" class="auth-signed-in-text">Signed in as</p>
+              <button id="authSignOut" class="drawer-link-btn">Sign out</button>
+            </div>
+          </section>
+
+          <div class="billing-toggle" role="tablist" aria-label="Billing cadence">
+            <button
+              id="toggleMonthly"
+              class="billing-option"
+              type="button"
+              data-plan-id="monthly"
+            >
+              Monthly
+            </button>
+            <button
+              id="toggleAnnual"
+              class="billing-option selected"
+              type="button"
+              data-plan-id="annual"
+            >
+              Yearly
+              <span class="save-badge">Save $60</span>
+            </button>
+          </div>
+
+          <section class="paywall-card">
+            <p id="paywallPlanBadge" class="paywall-plan-badge">Best Value</p>
+            <h3 id="paywallPlanTitle" class="paywall-plan-title">Annual</h3>
+            <div class="paywall-price-row">
+              <span id="paywallPrice" class="paywall-price">$4.99</span>
+              <span id="paywallPriceUnit" class="paywall-price-unit">/month</span>
+            </div>
+            <p id="paywallBillingNote" class="paywall-billing-note">Billed annually $59.99 / year</p>
+
+            <ul class="feature-list">
+              <li>600 credits per month</li>
+              <li>Premium listening mode access</li>
+              <li>Faster reading workflow inside Chrome</li>
+            </ul>
+
+            <button id="continueCheckout" class="subscribe-btn">Subscribe</button>
+          </section>
+        </section>
+      </main>
+
+      <section id="authOverlay" class="auth-overlay hidden" aria-live="polite">
+        <div class="auth-overlay-card">
+          <div class="auth-spinner" aria-hidden="true"></div>
+          <h2 class="auth-overlay-title">Authenticating</h2>
+          <p class="auth-overlay-copy">Complete the sign-in in your browser</p>
         </div>
-        <button id="continueCheckout" class="continue-btn">Continue</button>
-      </div>
-    </section>
+      </section>
+    </div>
     <script src="vendor/pdfjs/pdf.min.js"></script>
     <script src="popup.js"></script>
   </body>

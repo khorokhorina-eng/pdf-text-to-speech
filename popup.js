@@ -1,6 +1,7 @@
 const pdfjs = window.pdfjsLib;
 const statusEl = document.getElementById("status");
 const hintEl = document.getElementById("hint");
+const fileNameLabelEl = document.getElementById("fileNameLabel");
 const playBtn = document.getElementById("play");
 const pauseBtn = document.getElementById("pause");
 const stopBtn = document.getElementById("stop");
@@ -8,15 +9,9 @@ const speedSelect = document.getElementById("speed");
 const openFileBtn = document.getElementById("openFile");
 const fileInput = document.getElementById("fileInput");
 const limitUpgradeBtn = document.getElementById("limitUpgrade");
-const upgradeBtn = document.getElementById("upgrade");
-const contactBtn = document.getElementById("contact");
-const paywallModal = document.getElementById("paywallModal");
-const closePaywallBtn = document.getElementById("closePaywall");
 const paywallStatusEl = document.getElementById("paywallStatus");
 const trialEndedNoticeEl = document.getElementById("trialEndedNotice");
 const continueCheckoutBtn = document.getElementById("continueCheckout");
-const planCardEls = Array.from(document.querySelectorAll(".plan-card"));
-const accountStateEl = document.getElementById("accountState");
 const accountActionBtn = document.getElementById("accountAction");
 const authMessageEl = document.getElementById("authMessage");
 const authCopyEl = document.getElementById("authCopy");
@@ -24,6 +19,26 @@ const authSignedInEl = document.getElementById("authSignedIn");
 const authGoogleBtn = document.getElementById("authGoogle");
 const authSignedInTextEl = document.getElementById("authSignedInText");
 const authSignOutBtn = document.getElementById("authSignOut");
+const profileTriggerBtn = document.getElementById("profileTrigger");
+const closeDrawerBtn = document.getElementById("closeDrawer");
+const drawerBackdropEl = document.getElementById("drawerBackdrop");
+const drawerPlanNameEl = document.getElementById("drawerPlanName");
+const drawerPlanMetaEl = document.getElementById("drawerPlanMeta");
+const drawerEmailEl = document.getElementById("drawerEmail");
+const drawerUpgradeBtn = document.getElementById("drawerUpgrade");
+const authToastEl = document.getElementById("authToast");
+const authOverlayEl = document.getElementById("authOverlay");
+const readerScreenEl = document.getElementById("readerScreen");
+const paywallScreenEl = document.getElementById("paywallScreen");
+const backToReaderBtn = document.getElementById("backToReader");
+const readerControlsEl = document.getElementById("readerControls");
+const toggleMonthlyBtn = document.getElementById("toggleMonthly");
+const toggleAnnualBtn = document.getElementById("toggleAnnual");
+const paywallPlanBadgeEl = document.getElementById("paywallPlanBadge");
+const paywallPlanTitleEl = document.getElementById("paywallPlanTitle");
+const paywallPriceEl = document.getElementById("paywallPrice");
+const paywallPriceUnitEl = document.getElementById("paywallPriceUnit");
+const paywallBillingNoteEl = document.getElementById("paywallBillingNote");
 const REMOTE_API_BASE_URL = "https://pdftext2speech.com";
 const DEVICE_TOKEN_KEY = "deviceToken";
 
@@ -62,13 +77,31 @@ let selectedPlanId = "annual";
 let currentSubscription = { active: false, plan: null };
 let authState = { signedIn: false, email: "", method: null };
 let minFreePlaybackStartSeconds = 0;
+let activeScreen = "reader";
+let isAuthenticating = false;
+let authSuccessToastTimer = null;
+let authPollingTimer = null;
 
 const PLAN_META = {
   monthly: {
-    buttonText: "Continue with 1-month plan",
+    label: "Monthly",
+    buttonText: "Subscribe",
+    price: "$9.99",
+    unit: "/month",
+    billingNote: "Billed monthly",
+    badge: "",
+    planSummary: "Monthly Plan",
+    planMeta: "$9.99 billed every month.",
   },
   annual: {
-    buttonText: "Continue with 12-month plan",
+    label: "Annual",
+    buttonText: "Subscribe",
+    price: "$4.99",
+    unit: "/month",
+    billingNote: "Billed annually $59.99 / year",
+    badge: "Best Value",
+    planSummary: "Annual Plan",
+    planMeta: "$59.99 billed yearly.",
   },
 };
 
@@ -93,6 +126,70 @@ function setStatus(status, message = "") {
   updateUI();
 }
 
+function setActiveScreen(screen) {
+  activeScreen = screen === "paywall" ? "paywall" : "reader";
+  const showingPaywall = activeScreen === "paywall";
+  readerScreenEl.classList.toggle("hidden", showingPaywall);
+  paywallScreenEl.classList.toggle("hidden", !showingPaywall);
+  backToReaderBtn.classList.toggle("hidden", !showingPaywall);
+}
+
+function openDrawer() {
+  document.body.classList.add("drawer-open");
+  drawerBackdropEl.classList.remove("hidden");
+}
+
+function closeDrawer() {
+  document.body.classList.remove("drawer-open");
+  drawerBackdropEl.classList.add("hidden");
+}
+
+function setAuthenticating(nextValue) {
+  isAuthenticating = Boolean(nextValue);
+  authOverlayEl.classList.toggle("hidden", !isAuthenticating);
+  if (authPollingTimer) {
+    clearInterval(authPollingTimer);
+    authPollingTimer = null;
+  }
+  if (isAuthenticating) {
+    authPollingTimer = setInterval(() => {
+      void loadAuthState();
+    }, 1500);
+  }
+}
+
+function showAuthSuccessToast() {
+  if (authSuccessToastTimer) {
+    clearTimeout(authSuccessToastTimer);
+    authSuccessToastTimer = null;
+  }
+  authToastEl.textContent = "Successfully signed in with Google.";
+  authToastEl.classList.remove("hidden");
+  authSuccessToastTimer = setTimeout(() => {
+    authToastEl.classList.add("hidden");
+    authSuccessToastTimer = null;
+  }, 3200);
+}
+
+function getPlanPresentation() {
+  if (currentSubscription?.active) {
+    const activePlanId = currentSubscription?.plan?.planId || "";
+    const activePlanMeta = PLAN_META[activePlanId] || {};
+    return {
+      name: activePlanMeta.planSummary || "Paid Plan",
+      meta: activePlanMeta.planMeta || "Subscription active on this account.",
+    };
+  }
+
+  return {
+    name: "Free Trial",
+    meta:
+      getLiveRemainingSeconds() > 0
+        ? `${formatRemainingSeconds(getLiveRemainingSeconds())} remaining in your free trial.`
+        : "Upgrade to unlock paid listening.",
+  };
+}
+
 function updateUI() {
   document.body.dataset.status = state.status;
   statusEl.textContent = STATUS_LABELS[state.status] || "Ready";
@@ -105,6 +202,7 @@ function updateUI() {
   limitUpgradeBtn.classList.toggle("hidden", !shouldShowLimitUpgrade);
   const trialExhausted = !currentSubscription?.active && getLiveRemainingSeconds() <= 0;
   trialEndedNoticeEl.classList.toggle("hidden", !trialExhausted);
+  readerControlsEl.classList.toggle("hidden", !currentFileBuffer);
   playBtn.disabled =
     !currentFileBuffer || state.status === "reading" || trialExhausted;
   pauseBtn.disabled = !(state.status === "reading" || state.status === "paused");
@@ -118,12 +216,14 @@ function updateUI() {
     ? PLAN_META[selectedPlanId]?.buttonText || "Continue"
     : "Sign in to continue";
   continueCheckoutBtn.disabled = isCurrentPlan;
-  accountStateEl.textContent = authState.signedIn
-    ? `Signed in as ${authState.email}`
-    : "Not signed in";
-  accountActionBtn.textContent = authState.signedIn ? "Manage" : "Sign in";
-  openFileBtn.classList.toggle("primary-cta", !currentFileBuffer);
-  playBtn.classList.toggle("primary-cta", Boolean(currentFileBuffer));
+  fileNameLabelEl.textContent = state.fileName || "No file selected";
+  openFileBtn.textContent = state.fileName ? "Choose Another PDF" : "Open PDF";
+  const planPresentation = getPlanPresentation();
+  drawerPlanNameEl.textContent = planPresentation.name;
+  drawerPlanMetaEl.textContent = planPresentation.meta;
+  drawerEmailEl.textContent = authState.signedIn ? authState.email : "Guest mode";
+  accountActionBtn.textContent = authState.signedIn ? "Sign out" : "Sign in with Google";
+  drawerUpgradeBtn.classList.toggle("hidden", currentSubscription?.active);
 }
 
 function getLiveRemainingSeconds() {
@@ -540,6 +640,36 @@ function readLocalStorage(keys) {
   });
 }
 
+function getActiveTabUrl() {
+  return new Promise((resolve) => {
+    if (!chrome?.tabs?.query) {
+      resolve("");
+      return;
+    }
+
+    chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+      if (chrome.runtime.lastError) {
+        resolve("");
+        return;
+      }
+
+      const currentUrl = typeof tabs?.[0]?.url === "string" ? tabs[0].url.trim() : "";
+      if (!currentUrl) {
+        resolve("");
+        return;
+      }
+
+      const allowedProtocols = ["http:", "https:", "file:"];
+      try {
+        const parsed = new URL(currentUrl);
+        resolve(allowedProtocols.includes(parsed.protocol) ? currentUrl : "");
+      } catch (_error) {
+        resolve("");
+      }
+    });
+  });
+}
+
 function writeLocalStorage(payload) {
   return new Promise((resolve) => {
     chrome.storage.local.set(payload, () => resolve());
@@ -580,6 +710,7 @@ function updateAuthUI() {
 }
 
 async function loadAuthState() {
+  const wasSignedIn = authState.signedIn;
   try {
     const result = await sendRuntimeMessage({ type: "getAuthState" });
     authState = {
@@ -590,6 +721,15 @@ async function loadAuthState() {
   } catch (_error) {
     authState = { signedIn: false, email: "", method: null };
   }
+
+  if (isAuthenticating && authState.signedIn) {
+    setAuthenticating(false);
+    openDrawer();
+    showAuthSuccessToast();
+  } else if (!authState.signedIn && wasSignedIn) {
+    authToastEl.classList.add("hidden");
+  }
+
   updateAuthUI();
 }
 
@@ -615,39 +755,26 @@ async function refreshQuotaSnapshot() {
 
 async function signInWithGoogle() {
   authGoogleBtn.disabled = true;
+  accountActionBtn.disabled = true;
   authGoogleBtn.textContent = "Opening Google...";
+  accountActionBtn.textContent = "Opening Google...";
+  setAuthenticating(true);
+  closeDrawer();
   try {
+    const returnUrl = await getActiveTabUrl();
     await sendRuntimeMessage({
       type: "startGoogleSignIn",
-      returnUrl: chrome.runtime.getURL("paywall.html"),
+      returnUrl,
     });
-    setPaywallStatus("Complete Google sign-in in the opened tab. The extension page will reopen automatically.");
+    setPaywallStatus("Complete Google sign-in in the opened tab.");
   } catch (error) {
+    setAuthenticating(false);
     setPaywallStatus(error.message || "Unable to start Google sign-in.");
   } finally {
     authGoogleBtn.disabled = false;
+    accountActionBtn.disabled = false;
     authGoogleBtn.textContent = "Continue with Google";
-  }
-}
-
-async function startGoogleSignInFromPaywall() {
-  continueCheckoutBtn.disabled = true;
-  const initialLabel = continueCheckoutBtn.textContent;
-  continueCheckoutBtn.textContent = "Opening Google...";
-  try {
-    const deviceToken = await getOrCreateDeviceToken();
-    const target = new URL(`${REMOTE_API_BASE_URL}/auth/google/start`);
-    target.searchParams.set("device_token", deviceToken);
-    target.searchParams.set("return_url", chrome.runtime.getURL("paywall.html"));
-    chrome.tabs.create({ url: target.toString() });
-    setPaywallStatus(
-      "Complete Google sign-in in the opened tab. The extension page will reopen automatically."
-    );
-  } catch (error) {
-    setPaywallStatus(error.message || "Unable to start Google sign-in.");
-  } finally {
-    continueCheckoutBtn.disabled = false;
-    continueCheckoutBtn.textContent = initialLabel;
+    accountActionBtn.textContent = authState.signedIn ? "Sign out" : "Sign in with Google";
   }
 }
 
@@ -667,10 +794,15 @@ async function signOutAccount() {
 }
 
 function renderPaywallSelection() {
-  planCardEls.forEach((card) => {
-    const planId = card.dataset.planId || "";
-    card.classList.toggle("selected", planId === selectedPlanId);
-  });
+  toggleMonthlyBtn.classList.toggle("selected", selectedPlanId === "monthly");
+  toggleAnnualBtn.classList.toggle("selected", selectedPlanId === "annual");
+  const meta = PLAN_META[selectedPlanId] || PLAN_META.annual;
+  paywallPlanTitleEl.textContent = meta.label || "Annual";
+  paywallPriceEl.textContent = meta.price || "$4.99";
+  paywallPriceUnitEl.textContent = meta.unit || "/month";
+  paywallBillingNoteEl.textContent = meta.billingNote || "Billed annually $59.99 / year";
+  paywallPlanBadgeEl.textContent = meta.badge || "";
+  paywallPlanBadgeEl.classList.toggle("hidden", !meta.badge);
   updateUI();
 }
 
@@ -686,20 +818,22 @@ async function loadSubscriptionStatus() {
       }
       setPaywallStatus("Subscription active on this device.", true);
     } else {
-    setPaywallStatus(
-      authState.signedIn
-        ? "No active subscription detected."
-        : "Sign in before checkout to keep your paid plan attached to your account."
-    );
+      setPaywallStatus(
+        authState.signedIn
+          ? "No active subscription detected."
+          : "Sign in before checkout to keep your paid plan attached to your account."
+      );
     }
     renderPaywallSelection();
+    updateUI();
   } catch (error) {
     setPaywallStatus(error.message || "Failed to load subscription status.");
   }
 }
 
 function openPaywall() {
-  paywallModal.classList.remove("hidden");
+  setActiveScreen("paywall");
+  closeDrawer();
   if (!currentSubscription?.active && getLiveRemainingSeconds() <= 0) {
     setPaywallStatus("Your free trial has ended. Pay for a plan to keep listening.");
   }
@@ -709,13 +843,13 @@ function openPaywall() {
 }
 
 function closePaywall() {
-  paywallModal.classList.add("hidden");
+  setActiveScreen("reader");
 }
 
 async function openCheckoutForSelectedPlan() {
   if (!authState.signedIn) {
     setPaywallStatus("Continue with Google before checkout.");
-    await startGoogleSignInFromPaywall();
+    await signInWithGoogle();
     return;
   }
 
@@ -733,7 +867,7 @@ async function openCheckoutForSelectedPlan() {
     const result = await sendRuntimeMessage({
       type: "createCheckoutSession",
       planId: selectedPlanId,
-      returnUrl: chrome.runtime.getURL("paywall.html"),
+      returnUrl: chrome.runtime.getURL("popup.html"),
     });
     if (!result.url) {
       throw new Error("Checkout URL is missing.");
@@ -941,7 +1075,7 @@ async function prepareSelectedFile(file) {
           playbackToken += 1;
           void speakCurrentChunk(playbackToken);
         } else {
-          setStatus("idle", `${file.name} is ready. Preparing remaining pages...`);
+          setStatus("idle", "Your PDF is being prepared for reading.");
         }
       }
     }
@@ -961,7 +1095,7 @@ async function prepareSelectedFile(file) {
     }
 
     if (state.status !== "reading" && state.status !== "paused") {
-      setStatus("idle", `${file.name} is ready to read.`);
+      setStatus("idle", "Your PDF is being prepared for reading.");
     }
   } catch (error) {
     const details = error && error.message ? error.message : "Unable to prepare the PDF.";
@@ -1204,64 +1338,83 @@ speedSelect.addEventListener("change", async (event) => {
         startPlaybackUiTimer();
       }
     }, 250);
-    return;
   }
 });
 
-upgradeBtn.addEventListener("click", () => {
+profileTriggerBtn.addEventListener("click", () => {
+  openDrawer();
+});
+
+closeDrawerBtn.addEventListener("click", () => {
+  closeDrawer();
+});
+
+drawerBackdropEl.addEventListener("click", () => {
+  closeDrawer();
+});
+
+drawerUpgradeBtn.addEventListener("click", () => {
   openPaywall();
 });
 
 accountActionBtn.addEventListener("click", () => {
-  openPaywall();
+  if (authState.signedIn) {
+    void signOutAccount();
+    return;
+  }
+  void signInWithGoogle();
 });
 
 limitUpgradeBtn.addEventListener("click", () => {
   openPaywall();
 });
 
-contactBtn.addEventListener("click", () => {
-  chrome.tabs.create({ url: "mailto:support@pdftext2speech.com" });
-});
-
-closePaywallBtn.addEventListener("click", () => {
+backToReaderBtn.addEventListener("click", () => {
   closePaywall();
 });
 
 continueCheckoutBtn.addEventListener("click", () => {
   if (!authState.signedIn) {
-    void startGoogleSignInFromPaywall();
+    void signInWithGoogle();
     return;
   }
   void openCheckoutForSelectedPlan();
 });
 
 authGoogleBtn.addEventListener("click", () => {
-  signInWithGoogle();
+  void signInWithGoogle();
 });
 
 authSignOutBtn.addEventListener("click", () => {
-  signOutAccount();
+  void signOutAccount();
 });
 
-planCardEls.forEach((card) => {
-  card.addEventListener("click", () => {
-    selectedPlanId = card.dataset.planId || selectedPlanId;
-    renderPaywallSelection();
-  });
+toggleMonthlyBtn.addEventListener("click", () => {
+  selectedPlanId = "monthly";
+  renderPaywallSelection();
+});
+
+toggleAnnualBtn.addEventListener("click", () => {
+  selectedPlanId = "annual";
+  renderPaywallSelection();
 });
 
 window.addEventListener("focus", () => {
-  void loadAuthState().then(() => {
-    return refreshQuotaSnapshot();
-  }).then(() => {
-    if (!paywallModal.classList.contains("hidden")) {
-      return loadSubscriptionStatus();
-    }
-    return null;
-  });
+  void loadAuthState()
+    .then(() => refreshQuotaSnapshot())
+    .then(() => {
+      if (isAuthenticating && !authState.signedIn) {
+        setAuthenticating(false);
+      }
+      if (activeScreen === "paywall") {
+        return loadSubscriptionStatus();
+      }
+      return null;
+    });
 });
 
+setActiveScreen("reader");
+renderPaywallSelection();
 updateUI();
 void loadAuthState().then(() => refreshQuotaSnapshot());
 

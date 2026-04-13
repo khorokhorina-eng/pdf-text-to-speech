@@ -27,7 +27,17 @@ let subscriptionCache = {
   timestamp: 0,
 };
 
+function enableActionSidePanel() {
+  if (chrome.sidePanel?.setPanelBehavior) {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+  }
+}
+
+enableActionSidePanel();
+
 chrome.runtime.onInstalled.addListener((details) => {
+  enableActionSidePanel();
+
   if (details.reason !== "install") {
     return;
   }
@@ -35,6 +45,10 @@ chrome.runtime.onInstalled.addListener((details) => {
   chrome.tabs.create({
     url: `${REMOTE_API_BASE_URL}/welcome.html`,
   });
+});
+
+chrome.runtime.onStartup?.addListener(() => {
+  enableActionSidePanel();
 });
 
 function readStorage(keys) {
