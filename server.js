@@ -808,10 +808,13 @@ function renderAuthCompletePage(title, message, returnUrl = "") {
     `
     : `
       <section class="success-card">
-        <div class="status-icon error-icon" aria-hidden="true">!</div>
-        <p class="eyebrow">Action required</p>
+        <div class="status-icon success-icon" aria-hidden="true">
+          <span class="checkmark"></span>
+        </div>
+        <p class="eyebrow">Completed</p>
         <h1>${title}</h1>
         <p class="lead">${message}</p>
+        <p class="muted secondary">You can close this page safely.</p>
       </section>
     `;
 
@@ -884,10 +887,6 @@ function renderAuthCompletePage(title, message, returnUrl = "") {
       .success-icon {
         background: rgba(34, 197, 94, 0.14);
         color: #16a34a;
-      }
-      .error-icon {
-        background: rgba(239, 68, 68, 0.14);
-        color: #dc2626;
       }
       .checkmark {
         width: 18px;
