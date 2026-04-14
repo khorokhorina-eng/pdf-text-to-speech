@@ -76,15 +76,17 @@ h1 {
 }
 
 h2 {
-  font-size: clamp(26px, 4.5vw, 38px);
-  max-width: 680px;
+  font-size: clamp(28px, 4vw, 38px);
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+  max-width: 760px;
 }
 
 .intro {
   margin: 0;
-  max-width: 720px;
-  font-size: clamp(17px, 2.2vw, 20px);
-  line-height: 1.6;
+  max-width: 760px;
+  font-size: 14px;
+  line-height: 1.5;
   color: var(--muted);
 }
 
