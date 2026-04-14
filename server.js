@@ -63,6 +63,7 @@ const STRIPE_ANNUAL_PRICE_ID =
 
 const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || "";
 const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || "";
+const YANDEX_METRIKA_ID = process.env.YANDEX_METRIKA_ID || "108473321";
 
 const PLAN_DEFINITIONS = [
   {
@@ -768,37 +769,50 @@ async function handleAuthMe(req, res, parsedUrl) {
 
 function renderAuthCompletePage(title, message, returnUrl = "") {
   const safeReturn = sanitizeExtensionReturnUrl(returnUrl);
+  const metrika = YANDEX_METRIKA_ID
+    ? `
+    <script type="text/javascript">
+      (function(m,e,t,r,i,k,a){
+          m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
+          m[i].l=1*new Date();
+          for (var j = 0; j < document.scripts.length; j++) {if (document.scripts[j].src === r) { return; }}
+          k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a);
+      })(window, document,'script','https://mc.yandex.ru/metrika/tag.js?id=${YANDEX_METRIKA_ID}', 'ym');
+
+      ym(${YANDEX_METRIKA_ID}, 'init', {
+        ssr:true,
+        webvisor:true,
+        clickmap:true,
+        ecommerce:"dataLayer",
+        referrer: document.referrer,
+        url: location.href,
+        accurateTrackBounce:true,
+        trackLinks:true
+      });
+    </script>
+    <noscript><div><img src="https://mc.yandex.ru/watch/${YANDEX_METRIKA_ID}" style="position:absolute; left:-9999px;" alt="" /></div></noscript>`
+    : "";
   const cta = safeReturn
     ? `
       <section class="success-card">
+        <div class="status-icon success-icon" aria-hidden="true">
+          <span class="checkmark"></span>
+        </div>
         <p class="eyebrow">Signed in successfully</p>
         <h1>${title}</h1>
         <p class="lead">${message}</p>
-        <div class="browser-card" aria-hidden="true">
-          <div class="browser-top">
-            <span class="dot"></span>
-            <span class="dot"></span>
-            <span class="dot"></span>
-          </div>
-          <div class="toolbar">
-            <span class="toolbar-pill"></span>
-            <div class="extension-spot">
-              <span class="step-badge">1</span>
-              <span class="extension-icon">♪</span>
-            </div>
-          </div>
-          <div class="arrow-row">
-            <span class="arrow-line"></span>
-            <span class="arrow-head"></span>
-          </div>
-        </div>
-        <div class="instruction">
-          <p class="instruction-title">Now open the extension again.</p>
-          <p class="muted">Click the extension icon in your browser toolbar to return to PDF Text to Speech.</p>
-        </div>
+        <p class="muted">Redirecting you back to where you left off...</p>
+        <p class="muted secondary">If nothing happens, you can close this page safely.</p>
       </section>
     `
-    : `<p>You can now return to the extension and continue.</p>`;
+    : `
+      <section class="success-card">
+        <div class="status-icon error-icon" aria-hidden="true">!</div>
+        <p class="eyebrow">Action required</p>
+        <h1>${title}</h1>
+        <p class="lead">${message}</p>
+      </section>
+    `;
 
   return `<!doctype html>
 <html>
@@ -854,128 +868,52 @@ function renderAuthCompletePage(title, message, returnUrl = "") {
         line-height: 1.5;
         margin: 0;
       }
-      .browser-card {
-        margin: 26px 0 18px;
-        border: 1px solid rgba(112, 84, 52, 0.16);
-        border-radius: 24px;
-        background: #fff;
-        overflow: hidden;
-      }
-      .browser-top {
-        display: flex;
-        gap: 8px;
-        padding: 14px 16px;
-        background: #e9eefb;
-      }
-      .dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 999px;
-        background: rgba(31, 27, 23, 0.22);
-      }
-      .toolbar {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 14px;
-        padding: 18px 20px 12px;
-      }
-      .toolbar-pill {
-        height: 20px;
-        flex: 1;
-        border-radius: 999px;
-        background: #f1f3fb;
-      }
-      .extension-spot {
-        position: relative;
+      .status-icon {
         display: inline-flex;
         align-items: center;
         justify-content: center;
         width: 52px;
         height: 52px;
-        border-radius: 16px;
-        background: #fff6eb;
-        border: 2px solid #ed6b57;
-      }
-      .extension-icon {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 32px;
-        height: 32px;
-        border-radius: 10px;
-        background: #f2dfcb;
-        color: #1f1b17;
-        font-size: 18px;
-        font-weight: 700;
-      }
-      .step-badge {
-        position: absolute;
-        top: -14px;
-        left: -14px;
-        width: 34px;
-        height: 34px;
+        margin: 0 auto 18px;
         border-radius: 999px;
-        background: #fff;
-        border: 3px solid #ed6b57;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
         font-family: "Helvetica Neue", Arial, sans-serif;
-        font-size: 18px;
-        font-weight: 800;
-      }
-      .arrow-row {
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        gap: 0;
-        padding: 0 56px 18px 20px;
-      }
-      .arrow-line {
-        width: 120px;
-        height: 0;
-        border-top: 4px solid #ed6b57;
-      }
-      .arrow-head {
-        width: 18px;
-        height: 18px;
-        margin-left: -2px;
-        border-top: 4px solid #ed6b57;
-        border-right: 4px solid #ed6b57;
-        transform: rotate(45deg);
-      }
-      .instruction {
-        margin: 0 0 22px;
-      }
-      .instruction-title {
-        margin: 0 0 8px;
         font-size: 28px;
-        line-height: 1.08;
         font-weight: 700;
       }
-      .button {
-        display: inline-block;
-        padding: 14px 20px;
-        border-radius: 999px;
-        background: #111827;
-        color: #fff;
-        text-decoration: none;
-        font-family: "Helvetica Neue", Arial, sans-serif;
-        font-size: 16px;
-        font-weight: 700;
+      .success-icon {
+        background: rgba(34, 197, 94, 0.14);
+        color: #16a34a;
+      }
+      .error-icon {
+        background: rgba(239, 68, 68, 0.14);
+        color: #dc2626;
+      }
+      .checkmark {
+        width: 18px;
+        height: 10px;
+        border-left: 4px solid currentColor;
+        border-bottom: 4px solid currentColor;
+        transform: rotate(-45deg) translateY(-2px);
+      }
+      .secondary {
+        margin-top: 6px;
+        font-size: 15px;
       }
       @media (max-width: 640px) {
         .success-card { padding: 22px 18px; }
         .lead, .muted { font-size: 17px; }
-        .instruction-title { font-size: 24px; }
-        .arrow-row { padding-right: 34px; }
-        .arrow-line { width: 82px; }
+        .secondary { font-size: 14px; }
       }
     </style>
   </head>
   <body>
     ${cta}
+    ${metrika}
+    ${safeReturn ? `<script>
+      setTimeout(function () {
+        window.location.replace(${JSON.stringify(safeReturn)});
+      }, 1400);
+    </script>` : ""}
   </body>
 </html>`;
 }
@@ -1153,12 +1091,12 @@ async function handleGoogleCallback(_req, res, parsedUrl) {
     claimOrSyncAccountTrial(state, account, pending.deviceToken);
     delete state.googleStates[oauthState];
     writeState(state);
-
-    sendHtml(
-      res,
-      200,
-      renderAuthAutoClosePage("Google sign-in complete", `Signed in as ${account.email}.`)
-    );
+    const completeUrl = new URL(getPublicUrl("/reg-complete"));
+    completeUrl.searchParams.set("message", `Signed in as ${account.email}.`);
+    if (pending.returnUrl) {
+      completeUrl.searchParams.set("return_url", pending.returnUrl);
+    }
+    redirect(res, completeUrl.toString());
   } catch (error) {
     delete state.googleStates[oauthState];
     writeState(state);
@@ -1168,6 +1106,12 @@ async function handleGoogleCallback(_req, res, parsedUrl) {
       renderAuthCompletePage("Google sign-in failed", error.message || "Unable to sign in.")
     );
   }
+}
+
+function handleRegistrationComplete(res, parsedUrl) {
+  const returnUrl = sanitizeExtensionReturnUrl(parsedUrl.searchParams.get("return_url") || "");
+  const message = parsedUrl.searchParams.get("message") || "Signed in successfully.";
+  sendHtml(res, 200, renderAuthCompletePage("Login is successful", message, returnUrl));
 }
 
 async function handleAuthLogout(req, res, parsedUrl) {
@@ -1588,6 +1532,11 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && parsedUrl.pathname === "/auth/google/callback") {
     await handleGoogleCallback(req, res, parsedUrl);
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/reg-complete") {
+    handleRegistrationComplete(res, parsedUrl);
     return;
   }
 
