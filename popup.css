@@ -214,9 +214,10 @@ body {
 }
 
 .hero-title {
-  font-size: 31px;
-  line-height: 0.96;
-  font-weight: 680;
+  font-size: 28px;
+  line-height: 1;
+  font-weight: 620;
+  color: #2b2724;
 }
 
 .hero-copy {
@@ -261,7 +262,7 @@ body {
   color: var(--accent-ink);
   font: inherit;
   font-size: 15px;
-  font-weight: 800;
+  font-weight: 650;
   cursor: pointer;
   box-shadow: 0 16px 32px rgba(239, 115, 80, 0.18);
 }
@@ -502,9 +503,10 @@ body.drawer-open .profile-drawer {
 }
 
 .paywall-title {
-  font-size: 24px;
+  font-size: 22px;
   line-height: 1;
-  font-weight: 680;
+  font-weight: 620;
+  color: #2b2724;
 }
 
 .paywall-status {
@@ -547,8 +549,9 @@ body.drawer-open .profile-drawer {
 }
 
 .paywall-plan-title {
-  font-size: 20px;
-  font-weight: 650;
+  font-size: 18px;
+  font-weight: 620;
+  color: #2b2724;
 }
 
 .paywall-price-row {
@@ -559,10 +562,11 @@ body.drawer-open .profile-drawer {
 }
 
 .paywall-price {
-  font-size: 46px;
-  line-height: 0.92;
-  font-weight: 680;
-  letter-spacing: -0.06em;
+  font-size: 42px;
+  line-height: 0.94;
+  font-weight: 630;
+  letter-spacing: -0.045em;
+  color: #25211f;
 }
 
 .subscribe-btn-secondary {
@@ -661,7 +665,7 @@ body.drawer-open .profile-drawer {
 .auth-overlay-title {
   margin: 18px 0 8px;
   font-size: 18px;
-  font-weight: 700;
+  font-weight: 620;
   letter-spacing: -0.03em;
 }
 

@@ -83,7 +83,7 @@ a {
   margin: 0 0 12px;
   font-family: var(--font-ui);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 650;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--accent);
@@ -103,21 +103,22 @@ h3 {
   line-height: 1;
   letter-spacing: -0.025em;
   font-family: var(--font-ui);
-  font-weight: 720;
+  font-weight: 620;
+  color: #2b2724;
 }
 
 h1 {
-  font-size: clamp(42px, 8vw, 72px);
+  font-size: clamp(38px, 7vw, 62px);
   max-width: 720px;
 }
 
 h2 {
-  font-size: clamp(30px, 4vw, 44px);
+  font-size: clamp(28px, 4vw, 40px);
   margin-bottom: 14px;
 }
 
 h3 {
-  font-size: 24px;
+  font-size: 21px;
   margin-bottom: 10px;
 }
 
@@ -228,7 +229,7 @@ h3 {
 .price {
   margin: 0 0 8px;
   font-size: 38px;
-  font-weight: 720;
+  font-weight: 650;
 }
 
 .price-note {

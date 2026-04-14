@@ -857,20 +857,21 @@ function renderAuthCompletePage(title, message, returnUrl = "") {
       }
       h1 {
         margin: 0 0 12px;
-        font-size: clamp(36px, 7vw, 62px);
+        font-size: clamp(32px, 6vw, 52px);
         line-height: 1;
-        letter-spacing: -0.03em;
-        font-weight: 680;
+        letter-spacing: -0.025em;
+        font-weight: 620;
+        color: #2b2724;
       }
       .lead {
         margin: 0 0 22px;
-        font-size: 20px;
+        font-size: 18px;
         line-height: 1.45;
-        font-weight: 520;
+        font-weight: 500;
       }
       .muted {
         color: #6f665c;
-        font-size: 18px;
+        font-size: 16px;
         line-height: 1.5;
         margin: 0;
         font-weight: 500;
@@ -935,31 +936,37 @@ function renderAuthAutoClosePage(title, message) {
         display: grid;
         place-items: center;
         padding: 24px;
-        background: #f7f5f0;
-        color: #191919;
-        font-family: "Helvetica Neue", Arial, sans-serif;
+        background:
+          radial-gradient(circle at top, rgba(247, 200, 182, 0.26), transparent 30%),
+          radial-gradient(circle at top left, rgba(239, 115, 80, 0.12), transparent 28%),
+          linear-gradient(180deg, #fffaf6 0%, #fbf5f1 100%);
+        color: #1f1b17;
+        font-family: Manrope, "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
       }
       .card {
         width: 100%;
         max-width: 420px;
         padding: 28px 24px;
         border-radius: 24px;
-        background: rgba(255, 255, 255, 0.96);
-        border: 1px solid rgba(0, 0, 0, 0.08);
-        box-shadow: 0 20px 48px rgba(0, 0, 0, 0.08);
+        background: rgba(255, 255, 255, 0.94);
+        border: 1px solid #eadbd2;
+        box-shadow: 0 18px 42px rgba(27, 27, 27, 0.06);
         text-align: center;
       }
       h1 {
         margin: 0 0 10px;
         font-size: 28px;
-        line-height: 1.02;
-        letter-spacing: -0.04em;
+        line-height: 1;
+        letter-spacing: -0.025em;
+        font-weight: 620;
+        color: #2b2724;
       }
       p {
         margin: 0;
-        color: #666;
+        color: #6f665c;
         font-size: 15px;
         line-height: 1.5;
+        font-weight: 500;
       }
     </style>
   </head>
