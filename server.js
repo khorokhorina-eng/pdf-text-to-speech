@@ -107,6 +107,7 @@ function createEmptyState() {
     accountToCustomer: {},
     customerToAccount: {},
     sessionToAccount: {},
+    sessionToReturnUrl: {},
     googleStates: {},
   };
 }
@@ -1180,7 +1181,7 @@ async function handleCreateCheckoutSession(req, res, parsedUrl) {
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       line_items: [{ price: selectedPlan.stripePriceId, quantity: 1 }],
-      success_url: `${getPublicUrl("/paywall/success")}?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${getPublicUrl("/thank-you")}?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: cancelUrl,
       customer: customerId,
       client_reference_id: account.id,
@@ -1202,6 +1203,7 @@ async function handleCreateCheckoutSession(req, res, parsedUrl) {
     });
 
     state.sessionToAccount[session.id] = account.id;
+    state.sessionToReturnUrl[session.id] = returnUrl || "";
     rememberAccountCustomer(state, account.id, customerId);
     writeState(state);
 
@@ -1478,13 +1480,20 @@ async function handleTts(req, res, parsedUrl) {
   }
 }
 
-function handleSuccessPage(res) {
+function handleSuccessPage(res, parsedUrl) {
+  const state = readState();
+  const sessionId = parsedUrl.searchParams.get("session_id") || "";
+  const mappedReturnUrl = sessionId ? state.sessionToReturnUrl?.[sessionId] || "" : "";
+  const returnUrl =
+    sanitizeExtensionReturnUrl(parsedUrl.searchParams.get("return_url") || "") ||
+    sanitizeExtensionReturnUrl(mappedReturnUrl);
   sendHtml(
     res,
     200,
     renderAuthCompletePage(
-      "Payment successful",
-      "Your subscription is active. Return to the extension and refresh your account state."
+      "Thank you",
+      "Your payment was successful. Your plan is now active.",
+      returnUrl
     )
   );
 }
@@ -1576,8 +1585,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && parsedUrl.pathname === "/paywall/success") {
-    handleSuccessPage(res);
+  if (
+    req.method === "GET" &&
+    (parsedUrl.pathname === "/paywall/success" || parsedUrl.pathname === "/thank-you")
+  ) {
+    handleSuccessPage(res, parsedUrl);
     return;
   }
 
