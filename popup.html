@@ -28,8 +28,10 @@
           <p id="drawerPlanName" class="drawer-plan-name">Free Trial</p>
           <p id="drawerPlanMeta" class="drawer-plan-meta">Upgrade to unlock paid listening.</p>
         </div>
-        <button id="drawerUpgrade" class="drawer-upgrade-btn">Upgrade</button>
-        <button id="accountAction" class="drawer-link-btn">Sign in with Google</button>
+        <div class="drawer-actions">
+          <button id="drawerUpgrade" class="drawer-upgrade-btn">Upgrade</button>
+          <button id="accountAction" class="drawer-link-btn">Sign in with Google</button>
+        </div>
       </aside>
 
       <div id="drawerBackdrop" class="drawer-backdrop hidden"></div>
@@ -40,6 +42,7 @@
             <span class="profile-trigger-icon" aria-hidden="true">
               <span class="avatar-glyph"></span>
             </span>
+            <span class="profile-trigger-text">Account</span>
           </button>
           <span id="status" class="status-pill hidden">Ready</span>
           <div class="header-spacer" aria-hidden="true"></div>
@@ -63,7 +66,10 @@
 
           <section id="readerControls" class="reader-controls hidden">
             <div class="file-meta">
-              <p class="file-meta-label">Current file</p>
+              <div class="file-meta-topline">
+                <p class="file-meta-label">Current file</p>
+                <button id="replaceFile" class="inline-action" type="button">Replace PDF</button>
+              </div>
               <p id="fileNameLabel" class="file-meta-value">No file selected</p>
             </div>
 

@@ -7,6 +7,7 @@ const pauseBtn = document.getElementById("pause");
 const stopBtn = document.getElementById("stop");
 const speedSelect = document.getElementById("speed");
 const openFileBtn = document.getElementById("openFile");
+const replaceFileBtn = document.getElementById("replaceFile");
 const fileInput = document.getElementById("fileInput");
 const limitUpgradeBtn = document.getElementById("limitUpgrade");
 const paywallStatusEl = document.getElementById("paywallStatus");
@@ -200,6 +201,7 @@ function updateUI() {
   const trialExhausted = !currentSubscription?.active && getLiveRemainingSeconds() <= 0;
   trialEndedNoticeEl.classList.toggle("hidden", !trialExhausted);
   readerControlsEl.classList.toggle("hidden", !currentFileBuffer);
+  openFileBtn.classList.toggle("hidden", Boolean(currentFileBuffer));
   playBtn.disabled =
     !currentFileBuffer || state.status === "reading" || trialExhausted;
   pauseBtn.disabled = !(state.status === "reading" || state.status === "paused");
@@ -214,7 +216,6 @@ function updateUI() {
     : "Sign in to continue";
   continueCheckoutBtn.disabled = isCurrentPlan;
   fileNameLabelEl.textContent = state.fileName || "No file selected";
-  openFileBtn.textContent = state.fileName ? "Choose Another PDF" : "Open PDF";
   const planPresentation = getPlanPresentation();
   drawerPlanNameEl.textContent = planPresentation.name;
   drawerPlanMetaEl.textContent = planPresentation.meta;
@@ -1292,6 +1293,10 @@ async function stopPlayback() {
 }
 
 openFileBtn.addEventListener("click", () => {
+  fileInput.click();
+});
+
+replaceFileBtn?.addEventListener("click", () => {
   fileInput.click();
 });
 
