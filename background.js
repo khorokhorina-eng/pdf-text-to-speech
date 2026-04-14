@@ -64,10 +64,9 @@ function writeStorage(payload) {
 }
 
 async function readUsageSeconds() {
-  const deviceToken = await getOrCreateDeviceToken();
   const result = await readStorage([TRIAL_STATE_KEY]);
   const trialState = result?.[TRIAL_STATE_KEY];
-  if (!trialState || trialState.deviceToken !== deviceToken) {
+  if (!trialState) {
     return null;
   }
   if (!Number.isFinite(Number(trialState.remainingSeconds))) {
@@ -76,25 +75,47 @@ async function readUsageSeconds() {
   return Math.max(0, Math.floor(Number(trialState.remainingSeconds)));
 }
 
-async function writeUsageSeconds(value) {
+async function writeUsageSeconds(value, options = {}) {
   const deviceToken = await getOrCreateDeviceToken();
   const safeSeconds = Number.isFinite(Number(value))
     ? Math.max(0, Math.floor(Number(value)))
     : null;
+  const preserveFloor = options.preserveFloor !== false;
+  const existingSeconds = preserveFloor ? await readUsageSeconds() : null;
 
   if (safeSeconds === null) {
     await writeStorage({ [TRIAL_STATE_KEY]: null });
     return null;
   }
 
+  const nextSeconds = Number.isFinite(existingSeconds)
+    ? Math.min(existingSeconds, safeSeconds)
+    : safeSeconds;
+
   await writeStorage({
     [TRIAL_STATE_KEY]: {
       deviceToken,
-      remainingSeconds: safeSeconds,
+      remainingSeconds: nextSeconds,
       updatedAt: Date.now(),
     },
   });
-  return safeSeconds;
+  return nextSeconds;
+}
+
+async function persistTrialFloor(rawSeconds) {
+  const seconds = Number(rawSeconds);
+  if (!Number.isFinite(seconds)) {
+    return getPlaybackQuota();
+  }
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  await writeUsageSeconds(safeSeconds);
+  subscriptionCache = {
+    ...subscriptionCache,
+    remainingSeconds: safeSeconds,
+    minutesLeft: Math.ceil(safeSeconds / 60),
+    timestamp: Date.now(),
+  };
+  return getPlaybackQuota();
 }
 
 async function getOrCreateDeviceToken() {
@@ -280,7 +301,7 @@ async function getSubscriptionStatus(forceRefresh = false) {
   if (isAnonymousTrial) {
     await writeUsageSeconds(effectiveRemainingSeconds);
   } else {
-    await writeUsageSeconds(null);
+    await writeUsageSeconds(null, { preserveFloor: false });
   }
 
   return {
@@ -476,6 +497,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => {
         const errorMessage =
           error && error.message ? error.message : "Failed to save quota.";
+        sendResponse({ ok: false, error: errorMessage });
+      });
+    return true;
+  }
+
+  if (message.type === "persistTrialFloor") {
+    persistTrialFloor(message.remainingSeconds)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => {
+        const errorMessage =
+          error && error.message ? error.message : "Failed to persist trial floor.";
         sendResponse({ ok: false, error: errorMessage });
       });
     return true;

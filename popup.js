@@ -12,7 +12,9 @@ const fileInput = document.getElementById("fileInput");
 const limitUpgradeBtn = document.getElementById("limitUpgrade");
 const paywallStatusEl = document.getElementById("paywallStatus");
 const trialEndedNoticeEl = document.getElementById("trialEndedNotice");
-const continueCheckoutBtn = document.getElementById("continueCheckout");
+const trialUpgradeBtn = document.getElementById("trialUpgrade");
+const continueCheckoutMonthlyBtn = document.getElementById("continueCheckoutMonthly");
+const continueCheckoutAnnualBtn = document.getElementById("continueCheckoutAnnual");
 const accountActionBtn = document.getElementById("accountAction");
 const authMessageEl = document.getElementById("authMessage");
 const authCopyEl = document.getElementById("authCopy");
@@ -30,15 +32,9 @@ const readerScreenEl = document.getElementById("readerScreen");
 const paywallScreenEl = document.getElementById("paywallScreen");
 const backToReaderBtn = document.getElementById("backToReader");
 const readerControlsEl = document.getElementById("readerControls");
-const toggleMonthlyBtn = document.getElementById("toggleMonthly");
-const toggleAnnualBtn = document.getElementById("toggleAnnual");
-const paywallPlanBadgeEl = document.getElementById("paywallPlanBadge");
-const paywallPlanTitleEl = document.getElementById("paywallPlanTitle");
-const paywallPriceEl = document.getElementById("paywallPrice");
-const paywallPriceUnitEl = document.getElementById("paywallPriceUnit");
-const paywallBillingNoteEl = document.getElementById("paywallBillingNote");
 const REMOTE_API_BASE_URL = "https://pdftext2speech.com";
 const DEVICE_TOKEN_KEY = "deviceToken";
+const TRIAL_STATE_KEY = "trialState";
 
 const state = {
   status: "idle",
@@ -71,7 +67,6 @@ let currentFileBuffer = null;
 let isPreparingText = false;
 let preparationComplete = false;
 let pendingStartPlayback = false;
-let selectedPlanId = "annual";
 let currentSubscription = { active: false, plan: null };
 let authState = { signedIn: false, email: "", method: null };
 let minFreePlaybackStartSeconds = 0;
@@ -79,6 +74,7 @@ let activeScreen = "reader";
 let isAuthenticating = false;
 let authSuccessToastTimer = null;
 let authPollingTimer = null;
+let authReturnScreen = "drawer";
 
 const PLAN_META = {
   monthly: {
@@ -208,13 +204,24 @@ function updateUI() {
   stopBtn.disabled = !(state.status === "reading" || state.status === "paused");
   speedSelect.disabled = state.status === "loading";
   const activePlanId = currentSubscription?.plan?.planId || "";
-  const isCurrentPlan = currentSubscription?.active && activePlanId === selectedPlanId;
-  continueCheckoutBtn.textContent = isCurrentPlan
-    ? "Current plan active"
-    : authState.signedIn
-    ? PLAN_META[selectedPlanId]?.buttonText || "Continue"
-    : "Sign in to continue";
-  continueCheckoutBtn.disabled = isCurrentPlan;
+  if (continueCheckoutMonthlyBtn) {
+    const isCurrentMonthly = currentSubscription?.active && activePlanId === "monthly";
+    continueCheckoutMonthlyBtn.textContent = isCurrentMonthly
+      ? "Current monthly plan"
+      : authState.signedIn
+      ? "Subscribe monthly"
+      : "Sign in to subscribe";
+    continueCheckoutMonthlyBtn.disabled = isCurrentMonthly;
+  }
+  if (continueCheckoutAnnualBtn) {
+    const isCurrentAnnual = currentSubscription?.active && activePlanId === "annual";
+    continueCheckoutAnnualBtn.textContent = isCurrentAnnual
+      ? "Current yearly plan"
+      : authState.signedIn
+      ? "Subscribe yearly"
+      : "Sign in to subscribe";
+    continueCheckoutAnnualBtn.disabled = isCurrentAnnual;
+  }
   fileNameLabelEl.textContent = state.fileName || "No file selected";
   const planPresentation = getPlanPresentation();
   drawerPlanNameEl.textContent = planPresentation.name;
@@ -222,6 +229,7 @@ function updateUI() {
   drawerEmailEl.textContent = authState.signedIn ? authState.email : "Guest mode";
   accountActionBtn.textContent = authState.signedIn ? "Sign out" : "Sign in with Google";
   drawerUpgradeBtn.classList.toggle("hidden", currentSubscription?.active);
+  trialUpgradeBtn?.classList.toggle("hidden", !trialExhausted);
 }
 
 function getLiveRemainingSeconds() {
@@ -291,6 +299,7 @@ function captureActivePlaybackDelta() {
   if (Number.isFinite(sessionRemainingSeconds)) {
     sessionRemainingSeconds = Math.max(0, sessionRemainingSeconds - elapsedSeconds);
     lastKnownRemainingSeconds = Math.max(0, sessionRemainingSeconds);
+    void persistLocalTrialFloor(sessionRemainingSeconds);
   }
   return elapsedSeconds;
 }
@@ -350,7 +359,7 @@ function startPlaybackUsageFlushTimer() {
         }
         lastActivePlaybackTickMs = Date.now();
       });
-  }, 15000);
+  }, 5000);
 }
 
 function cleanupCurrentAudio() {
@@ -687,6 +696,27 @@ async function getOrCreateDeviceToken() {
   return created;
 }
 
+async function persistLocalTrialFloor(remainingSeconds) {
+  if (authState.signedIn) {
+    return;
+  }
+  const deviceToken = await getOrCreateDeviceToken();
+  const safeSeconds = Number.isFinite(Number(remainingSeconds))
+    ? Math.max(0, Math.floor(Number(remainingSeconds)))
+    : 0;
+  await writeLocalStorage({
+    [TRIAL_STATE_KEY]: {
+      deviceToken,
+      remainingSeconds: safeSeconds,
+      updatedAt: Date.now(),
+    },
+  });
+  await sendRuntimeMessage({
+    type: "persistTrialFloor",
+    remainingSeconds: safeSeconds,
+  }).catch(() => null);
+}
+
 function setPaywallStatus(text, ok = false) {
   paywallStatusEl.textContent = text;
   paywallStatusEl.style.color = ok ? "#24553a" : "#6f665c";
@@ -718,8 +748,16 @@ async function loadAuthState() {
 
   if (isAuthenticating && authState.signedIn) {
     setAuthenticating(false);
-    openDrawer();
+    if (authReturnScreen === "paywall") {
+      setActiveScreen("paywall");
+      closeDrawer();
+      setPaywallStatus("Signed in. Choose your plan to continue.");
+      void loadSubscriptionStatus();
+    } else {
+      openDrawer();
+    }
     showAuthSuccessToast();
+    authReturnScreen = "drawer";
   } else if (!authState.signedIn && wasSignedIn) {
     authToastEl.classList.add("hidden");
   }
@@ -747,7 +785,8 @@ async function refreshQuotaSnapshot() {
   }
 }
 
-async function signInWithGoogle() {
+async function signInWithGoogle(targetScreen = "drawer") {
+  authReturnScreen = targetScreen === "paywall" ? "paywall" : "drawer";
   authGoogleBtn.disabled = true;
   accountActionBtn.disabled = true;
   authGoogleBtn.textContent = "Opening Google...";
@@ -787,19 +826,6 @@ async function signOutAccount() {
   updateAuthUI();
 }
 
-function renderPaywallSelection() {
-  toggleMonthlyBtn.classList.toggle("selected", selectedPlanId === "monthly");
-  toggleAnnualBtn.classList.toggle("selected", selectedPlanId === "annual");
-  const meta = PLAN_META[selectedPlanId] || PLAN_META.annual;
-  paywallPlanTitleEl.textContent = meta.label || "Annual";
-  paywallPriceEl.textContent = meta.price || "$4.99";
-  paywallPriceUnitEl.textContent = meta.unit || "/month";
-  paywallBillingNoteEl.textContent = meta.billingNote || "Billed annually $59.99 / year";
-  paywallPlanBadgeEl.textContent = meta.badge || "";
-  paywallPlanBadgeEl.classList.toggle("hidden", !meta.badge);
-  updateUI();
-}
-
 async function loadSubscriptionStatus() {
   setPaywallStatus("Checking subscription status...");
   try {
@@ -818,7 +844,6 @@ async function loadSubscriptionStatus() {
           : "Sign in before checkout to keep your paid plan attached to your account."
       );
     }
-    renderPaywallSelection();
     updateUI();
   } catch (error) {
     setPaywallStatus(error.message || "Failed to load subscription status.");
@@ -840,10 +865,10 @@ function closePaywall() {
   setActiveScreen("reader");
 }
 
-async function openCheckoutForSelectedPlan() {
+async function openCheckoutForPlan(planId) {
   if (!authState.signedIn) {
     setPaywallStatus("Continue with Google before checkout.");
-    await signInWithGoogle();
+    await signInWithGoogle("paywall");
     return;
   }
 
@@ -851,16 +876,21 @@ async function openCheckoutForSelectedPlan() {
 
   if (!authState.signedIn) {
     setPaywallStatus("Continue with Google before checkout.");
-    await signInWithGoogle();
+    await signInWithGoogle("paywall");
     return;
   }
 
-  continueCheckoutBtn.disabled = true;
+  if (planId === "monthly" && continueCheckoutMonthlyBtn) {
+    continueCheckoutMonthlyBtn.disabled = true;
+  }
+  if (planId === "annual" && continueCheckoutAnnualBtn) {
+    continueCheckoutAnnualBtn.disabled = true;
+  }
   setPaywallStatus("Creating Stripe Checkout session...");
   try {
     const result = await sendRuntimeMessage({
       type: "createCheckoutSession",
-      planId: selectedPlanId,
+      planId,
       returnUrl: chrome.runtime.getURL("popup.html"),
     });
     if (!result.url) {
@@ -871,7 +901,12 @@ async function openCheckoutForSelectedPlan() {
   } catch (error) {
     setPaywallStatus(error.message || "Unable to open checkout.");
   } finally {
-    continueCheckoutBtn.disabled = false;
+    if (continueCheckoutMonthlyBtn) {
+      continueCheckoutMonthlyBtn.disabled = false;
+    }
+    if (continueCheckoutAnnualBtn) {
+      continueCheckoutAnnualBtn.disabled = false;
+    }
   }
 }
 
@@ -1360,7 +1395,7 @@ accountActionBtn.addEventListener("click", () => {
     void signOutAccount();
     return;
   }
-  void signInWithGoogle();
+  void signInWithGoogle("drawer");
 });
 
 limitUpgradeBtn.addEventListener("click", () => {
@@ -1371,26 +1406,28 @@ backToReaderBtn.addEventListener("click", () => {
   closePaywall();
 });
 
-continueCheckoutBtn.addEventListener("click", () => {
+continueCheckoutMonthlyBtn?.addEventListener("click", () => {
   if (!authState.signedIn) {
-    void signInWithGoogle();
+    void signInWithGoogle("paywall");
     return;
   }
-  void openCheckoutForSelectedPlan();
+  void openCheckoutForPlan("monthly");
+});
+
+continueCheckoutAnnualBtn?.addEventListener("click", () => {
+  if (!authState.signedIn) {
+    void signInWithGoogle("paywall");
+    return;
+  }
+  void openCheckoutForPlan("annual");
 });
 
 authGoogleBtn.addEventListener("click", () => {
-  void signInWithGoogle();
+  void signInWithGoogle("paywall");
 });
 
-toggleMonthlyBtn.addEventListener("click", () => {
-  selectedPlanId = "monthly";
-  renderPaywallSelection();
-});
-
-toggleAnnualBtn.addEventListener("click", () => {
-  selectedPlanId = "annual";
-  renderPaywallSelection();
+trialUpgradeBtn?.addEventListener("click", () => {
+  openPaywall();
 });
 
 window.addEventListener("focus", () => {
@@ -1408,7 +1445,6 @@ window.addEventListener("focus", () => {
 });
 
 setActiveScreen("reader");
-renderPaywallSelection();
 updateUI();
 void loadAuthState().then(() => refreshQuotaSnapshot());
 

@@ -58,6 +58,9 @@
           <section id="trialEndedNotice" class="trial-banner hidden">
             <p class="trial-banner-title">Free trial ended</p>
             <p class="trial-banner-copy">Upgrade to continue listening to PDF files.</p>
+            <button id="trialUpgrade" class="trial-upgrade-btn" type="button">
+              Upgrade to premium
+            </button>
           </section>
 
           <input id="fileInput" class="hidden-input" type="file" accept=".pdf,application/pdf" />
@@ -113,34 +116,13 @@
             <button id="authGoogle" class="auth-google">Continue with Google</button>
           </section>
 
-          <div class="billing-toggle" role="tablist" aria-label="Billing cadence">
-            <button
-              id="toggleMonthly"
-              class="billing-option"
-              type="button"
-              data-plan-id="monthly"
-            >
-              Monthly
-            </button>
-            <button
-              id="toggleAnnual"
-              class="billing-option selected"
-              type="button"
-              data-plan-id="annual"
-            >
-              Yearly
-              <span class="save-badge">Save $60</span>
-            </button>
-          </div>
-
           <section class="paywall-card">
-            <p id="paywallPlanBadge" class="paywall-plan-badge">Best Value</p>
-            <h3 id="paywallPlanTitle" class="paywall-plan-title">Annual</h3>
+            <h3 class="paywall-plan-title">Monthly</h3>
             <div class="paywall-price-row">
-              <span id="paywallPrice" class="paywall-price">$4.99</span>
-              <span id="paywallPriceUnit" class="paywall-price-unit">/month</span>
+              <span class="paywall-price">$9.99</span>
+              <span class="paywall-price-unit">/month</span>
             </div>
-            <p id="paywallBillingNote" class="paywall-billing-note">Billed annually $59.99 / year</p>
+            <p class="paywall-billing-note">Billed monthly</p>
 
             <ul class="feature-list">
               <li>600 credits per month</li>
@@ -148,7 +130,25 @@
               <li>Faster reading workflow inside Chrome</li>
             </ul>
 
-            <button id="continueCheckout" class="subscribe-btn">Subscribe</button>
+            <button id="continueCheckoutMonthly" class="subscribe-btn subscribe-btn-secondary">Subscribe monthly</button>
+          </section>
+
+          <section class="paywall-card paywall-card-featured">
+            <p class="paywall-plan-badge">Best Value</p>
+            <h3 class="paywall-plan-title">Yearly</h3>
+            <div class="paywall-price-row">
+              <span class="paywall-price">$4.99</span>
+              <span class="paywall-price-unit">/month</span>
+            </div>
+            <p class="paywall-billing-note">Billed annually $59.99 / year</p>
+
+            <ul class="feature-list">
+              <li>600 credits per month</li>
+              <li>Premium listening mode access</li>
+              <li>Faster reading workflow inside Chrome</li>
+            </ul>
+
+            <button id="continueCheckoutAnnual" class="subscribe-btn">Subscribe yearly</button>
           </section>
         </section>
       </main>

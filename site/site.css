@@ -1,11 +1,11 @@
 :root {
-  --bg: #f4ead9;
-  --panel: rgba(255, 251, 245, 0.9);
+  --bg: #fbf3eb;
+  --panel: rgba(255, 251, 246, 0.92);
   --ink: #1e1a17;
   --muted: #6d6258;
-  --line: rgba(84, 61, 37, 0.14);
-  --accent: #af4b1d;
-  --accent-deep: #8d3510;
+  --line: rgba(120, 77, 48, 0.14);
+  --accent: #ef7350;
+  --accent-deep: #d94d27;
   --shadow: 0 24px 60px rgba(59, 38, 21, 0.14);
 }
 
@@ -18,8 +18,8 @@ body {
   color: var(--ink);
   font-family: Georgia, "Times New Roman", serif;
   background:
-    radial-gradient(circle at top left, rgba(175, 75, 29, 0.16), transparent 24%),
-    linear-gradient(180deg, #faf3e8 0%, var(--bg) 100%);
+    radial-gradient(circle at top left, rgba(239, 115, 80, 0.14), transparent 24%),
+    linear-gradient(180deg, #fff8f2 0%, var(--bg) 100%);
 }
 
 a {
@@ -43,7 +43,7 @@ a {
   padding: 14px 18px;
   border: 1px solid var(--line);
   border-radius: 24px;
-  background: rgba(255, 251, 245, 0.72);
+  background: rgba(255, 252, 248, 0.78);
   box-shadow: var(--shadow);
 }
 
@@ -146,7 +146,7 @@ h3 {
 .btn-primary {
   background: linear-gradient(180deg, var(--accent) 0%, var(--accent-deep) 100%);
   color: #fff;
-  box-shadow: 0 14px 28px rgba(141, 53, 16, 0.24);
+  box-shadow: 0 14px 28px rgba(217, 77, 39, 0.22);
 }
 
 .btn-secondary {
