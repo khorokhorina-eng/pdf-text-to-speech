@@ -828,49 +828,52 @@ function renderAuthCompletePage(title, message, returnUrl = "") {
       * { box-sizing: border-box; }
       body {
         margin: 0;
-        font-family: Georgia, "Times New Roman", serif;
+        font-family: Manrope, "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
         min-height: 100vh;
         padding: 28px 18px;
         background:
-          radial-gradient(circle at top left, rgba(181, 82, 36, 0.14), transparent 26%),
-          linear-gradient(180deg, #f9f0e3 0%, #efe4d2 100%);
+          radial-gradient(circle at top, rgba(247, 200, 182, 0.26), transparent 30%),
+          radial-gradient(circle at top left, rgba(239, 115, 80, 0.12), transparent 28%),
+          linear-gradient(180deg, #fffaf6 0%, #fbf5f1 100%);
         color: #1f1b17;
       }
-      a { color: #2563eb; }
+      a { color: #d94d27; }
       .success-card {
         max-width: 760px;
         margin: 0 auto;
-        background: rgba(255, 251, 245, 0.92);
-        border: 1px solid rgba(112, 84, 52, 0.14);
+        background: rgba(255, 255, 255, 0.94);
+        border: 1px solid #eadbd2;
         border-radius: 28px;
         padding: 28px;
-        box-shadow: 0 22px 50px rgba(67, 40, 19, 0.14);
+        box-shadow: 0 18px 42px rgba(27, 27, 27, 0.06);
       }
       .eyebrow {
         margin: 0 0 10px;
-        font-family: "Helvetica Neue", Arial, sans-serif;
         font-size: 12px;
-        font-weight: 700;
+        font-weight: 650;
         letter-spacing: 0.16em;
         text-transform: uppercase;
-        color: #b55224;
+        color: #ef7350;
       }
       h1 {
         margin: 0 0 12px;
         font-size: clamp(36px, 7vw, 62px);
-        line-height: 0.94;
-        letter-spacing: -0.05em;
+        line-height: 1;
+        letter-spacing: -0.03em;
+        font-weight: 680;
       }
       .lead {
         margin: 0 0 22px;
         font-size: 20px;
         line-height: 1.45;
+        font-weight: 520;
       }
       .muted {
         color: #6f665c;
         font-size: 18px;
         line-height: 1.5;
         margin: 0;
+        font-weight: 500;
       }
       .status-icon {
         display: inline-flex;
@@ -880,9 +883,8 @@ function renderAuthCompletePage(title, message, returnUrl = "") {
         height: 52px;
         margin: 0 auto 18px;
         border-radius: 999px;
-        font-family: "Helvetica Neue", Arial, sans-serif;
         font-size: 28px;
-        font-weight: 700;
+        font-weight: 650;
       }
       .success-icon {
         background: rgba(34, 197, 94, 0.14);
