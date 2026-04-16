@@ -81,9 +81,9 @@ const PLAN_META = {
   monthly: {
     label: "Monthly",
     buttonText: "Subscribe",
-    price: "$9.99",
-    unit: "/month",
-    billingNote: "Billed monthly",
+    price: "$0.33",
+    unit: "/day",
+    billingNote: "Billed monthly $9.99 / month",
     badge: "",
     planSummary: "Monthly Plan",
     planMeta: "$9.99 billed every month.",
