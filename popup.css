@@ -351,9 +351,9 @@ button:disabled {
 }
 
 .file-meta {
-  padding: 12px 14px;
-  border-radius: 18px;
-  background: var(--surface-strong);
+  padding: 12px 14px 10px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
   border: 1px solid var(--line);
 }
 
@@ -365,26 +365,31 @@ button:disabled {
 }
 
 .file-meta-value {
-  margin: 4px 0 0;
-  font-size: 16px;
-  font-weight: 630;
+  margin: 6px 0 0;
+  font-size: 17px;
+  line-height: 1.2;
+  font-weight: 620;
   word-break: break-word;
+  color: #2b2724;
 }
 
-.inline-action {
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: #8d8177;
+.replace-file-btn {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.9);
+  color: #6f665c;
   font: inherit;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  box-shadow: none;
 }
 
-.inline-action:hover:not(:disabled) {
+.replace-file-btn:hover:not(:disabled) {
   transform: none;
-  opacity: 0.7;
+  background: #fff;
 }
 
 .secondary-grid {
@@ -581,13 +586,6 @@ body.drawer-open .profile-drawer {
   color: #25211f;
 }
 
-.subscribe-btn-secondary {
-  background: rgba(255, 255, 255, 0.98);
-  color: var(--ink);
-  border: 1px solid var(--line);
-  box-shadow: none;
-}
-
 .paywall-price-unit {
   margin-bottom: 6px;
   font-size: 14px;
@@ -628,10 +626,13 @@ body.drawer-open .profile-drawer {
 }
 
 #paywallScreen .subscribe-btn,
-#paywallScreen .subscribe-btn-secondary,
 #paywallScreen .auth-google {
   min-height: 48px;
   font-size: 15px;
+}
+
+#paywallScreen .subscribe-btn[aria-busy="true"] {
+  opacity: 1;
 }
 
 #paywallScreen .paywall-billing-note {

@@ -19,6 +19,7 @@ const accountActionBtn = document.getElementById("accountAction");
 const authMessageEl = document.getElementById("authMessage");
 const authCopyEl = document.getElementById("authCopy");
 const authGoogleBtn = document.getElementById("authGoogle");
+const authPanelEl = document.getElementById("authPanel");
 const profileTriggerBtn = document.getElementById("profileTrigger");
 const closeDrawerBtn = document.getElementById("closeDrawer");
 const drawerBackdropEl = document.getElementById("drawerBackdrop");
@@ -90,12 +91,12 @@ const PLAN_META = {
   annual: {
     label: "Annual",
     buttonText: "Subscribe",
-    price: "$4.99",
-    unit: "/month",
-    billingNote: "Billed annually $59.99 / year",
+    price: "$0.25",
+    unit: "/day",
+    billingNote: "Billed annually $89.99 / year",
     badge: "Best Value",
     planSummary: "Annual Plan",
-    planMeta: "$59.99 billed yearly.",
+    planMeta: "$89.99 billed yearly.",
   },
 };
 
@@ -697,9 +698,6 @@ async function getOrCreateDeviceToken() {
 }
 
 async function persistLocalTrialFloor(remainingSeconds) {
-  if (authState.signedIn) {
-    return;
-  }
   const deviceToken = await getOrCreateDeviceToken();
   const safeSeconds = Number.isFinite(Number(remainingSeconds))
     ? Math.max(0, Math.floor(Number(remainingSeconds)))
@@ -723,6 +721,7 @@ function setPaywallStatus(text, ok = false) {
 }
 
 function updateAuthUI() {
+  authPanelEl?.classList.toggle("hidden", authState.signedIn);
   authCopyEl.classList.toggle("hidden", authState.signedIn);
   authGoogleBtn.classList.toggle("hidden", authState.signedIn);
   authMessageEl.textContent = authState.signedIn
@@ -882,9 +881,13 @@ async function openCheckoutForPlan(planId) {
 
   if (planId === "monthly" && continueCheckoutMonthlyBtn) {
     continueCheckoutMonthlyBtn.disabled = true;
+    continueCheckoutMonthlyBtn.setAttribute("aria-busy", "true");
+    continueCheckoutMonthlyBtn.textContent = "Opening checkout...";
   }
   if (planId === "annual" && continueCheckoutAnnualBtn) {
     continueCheckoutAnnualBtn.disabled = true;
+    continueCheckoutAnnualBtn.setAttribute("aria-busy", "true");
+    continueCheckoutAnnualBtn.textContent = "Opening checkout...";
   }
   setPaywallStatus("Creating Stripe Checkout session...");
   try {
@@ -903,10 +906,13 @@ async function openCheckoutForPlan(planId) {
   } finally {
     if (continueCheckoutMonthlyBtn) {
       continueCheckoutMonthlyBtn.disabled = false;
+      continueCheckoutMonthlyBtn.removeAttribute("aria-busy");
     }
     if (continueCheckoutAnnualBtn) {
       continueCheckoutAnnualBtn.disabled = false;
+      continueCheckoutAnnualBtn.removeAttribute("aria-busy");
     }
+    updateUI();
   }
 }
 
