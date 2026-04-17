@@ -279,8 +279,8 @@ async function getSubscriptionStatus(forceRefresh = false) {
     : Number.isFinite(Number(data.minutesLeft))
     ? Math.max(0, Number(data.minutesLeft)) * 60
     : configuredFreeTrialSeconds;
-  const isAnonymousTrial = !data.paid && !data.signedIn;
-  const effectiveRemainingSeconds = isAnonymousTrial && Number.isFinite(localRemainingSeconds)
+  const isTrialState = !data.paid;
+  const effectiveRemainingSeconds = isTrialState && Number.isFinite(localRemainingSeconds)
     ? Math.min(serverRemainingSeconds, localRemainingSeconds)
     : serverRemainingSeconds;
 
@@ -298,7 +298,7 @@ async function getSubscriptionStatus(forceRefresh = false) {
     timestamp: now,
   };
 
-  if (isAnonymousTrial) {
+  if (isTrialState) {
     await writeUsageSeconds(effectiveRemainingSeconds);
   } else {
     await writeUsageSeconds(null, { preserveFloor: false });
