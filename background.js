@@ -24,6 +24,7 @@ let subscriptionCache = {
   remainingSeconds: DEFAULT_FREE_TRIAL_SECONDS,
   freeTrialSeconds: DEFAULT_FREE_TRIAL_SECONDS,
   minFreePlaybackStartSeconds: DEFAULT_MIN_FREE_PLAYBACK_START_SECONDS,
+  signedInTrial: false,
   timestamp: 0,
 };
 
@@ -257,13 +258,15 @@ async function getSubscriptionStatus(forceRefresh = false) {
     subscriptionCache.deviceToken === deviceToken &&
     now - subscriptionCache.timestamp < SUBSCRIPTION_CACHE_MS
   ) {
+    const cachedFloorApplies =
+      !subscriptionCache.signedInTrial && Number.isFinite(localRemainingSeconds);
     return {
       deviceToken,
       active: subscriptionCache.active,
       status: subscriptionCache.status,
       plan: subscriptionCache.plan,
       minutesLeft: subscriptionCache.minutesLeft,
-      remainingSeconds: Number.isFinite(localRemainingSeconds)
+      remainingSeconds: cachedFloorApplies
         ? Math.min(subscriptionCache.remainingSeconds, localRemainingSeconds)
         : subscriptionCache.remainingSeconds,
       freeTrialSeconds: subscriptionCache.freeTrialSeconds,
@@ -280,7 +283,12 @@ async function getSubscriptionStatus(forceRefresh = false) {
     ? Math.max(0, Number(data.minutesLeft)) * 60
     : configuredFreeTrialSeconds;
   const isTrialState = !data.paid;
-  const effectiveRemainingSeconds = isTrialState && Number.isFinite(localRemainingSeconds)
+  const isSignedInTrial = Boolean(data.signedIn || data.email);
+  const localFloorApplies =
+    isTrialState &&
+    Number.isFinite(localRemainingSeconds) &&
+    !isSignedInTrial;
+  const effectiveRemainingSeconds = localFloorApplies
     ? Math.min(serverRemainingSeconds, localRemainingSeconds)
     : serverRemainingSeconds;
 
@@ -295,11 +303,12 @@ async function getSubscriptionStatus(forceRefresh = false) {
       : Math.ceil(configuredFreeTrialSeconds / 60),
     freeTrialSeconds: configuredFreeTrialSeconds,
     minFreePlaybackStartSeconds: configuredMinStartSeconds,
+    signedInTrial: isTrialState && isSignedInTrial,
     timestamp: now,
   };
 
   if (isTrialState) {
-    await writeUsageSeconds(effectiveRemainingSeconds);
+    await writeUsageSeconds(effectiveRemainingSeconds, { preserveFloor: localFloorApplies });
   } else {
     await writeUsageSeconds(null, { preserveFloor: false });
   }

@@ -404,11 +404,19 @@ function syncDeviceUsageToAccountTrial(state, deviceToken, account) {
 
 function claimOrSyncAccountTrial(state, account, deviceToken) {
   if (!account) {
-    return null;
+    return {
+      remainingSeconds: null,
+      previousAccountSeconds: null,
+      deviceRemainingSeconds: null,
+      reducedByAccount: false,
+    };
   }
 
   const deviceUsage = getOrCreateDeviceUsage(state, deviceToken);
   const deviceRemainingSeconds = deviceUsage.remainingSeconds;
+  const previousAccountSeconds = hasClaimedAccountTrial(account)
+    ? normalizeSeconds(account.trialRemainingSeconds)
+    : null;
 
   if (!hasClaimedAccountTrial(account)) {
     account.trialRemainingSeconds = normalizeSeconds(
@@ -420,12 +428,22 @@ function claimOrSyncAccountTrial(state, account, deviceToken) {
   } else {
     account.trialRemainingSeconds = Math.min(
       FREE_TRIAL_SECONDS,
-      normalizeSeconds(account.trialRemainingSeconds)
+      normalizeSeconds(account.trialRemainingSeconds),
+      normalizeSeconds(deviceRemainingSeconds, FREE_TRIAL_SECONDS)
     );
+    account.updatedAt = nowIso();
   }
 
   syncDeviceUsageToAccountTrial(state, deviceToken, account);
-  return account.trialRemainingSeconds;
+  return {
+    remainingSeconds: account.trialRemainingSeconds,
+    previousAccountSeconds,
+    deviceRemainingSeconds,
+    reducedByAccount:
+      Number.isFinite(previousAccountSeconds) &&
+      previousAccountSeconds < deviceRemainingSeconds &&
+      account.trialRemainingSeconds === previousAccountSeconds,
+  };
 }
 
 function getFreeTrialRemainingSeconds(state, account, deviceToken) {
@@ -433,7 +451,7 @@ function getFreeTrialRemainingSeconds(state, account, deviceToken) {
     return getOrCreateDeviceUsage(state, deviceToken).remainingSeconds;
   }
 
-  return claimOrSyncAccountTrial(state, account, deviceToken);
+  return claimOrSyncAccountTrial(state, account, deviceToken).remainingSeconds;
 }
 
 function deductFreeTrialSeconds(state, account, deviceToken, seconds) {
@@ -446,7 +464,7 @@ function deductFreeTrialSeconds(state, account, deviceToken, seconds) {
     return deductDeviceSeconds(state, deviceToken, normalizedSeconds);
   }
 
-  const remainingSeconds = claimOrSyncAccountTrial(state, account, deviceToken);
+  const remainingSeconds = claimOrSyncAccountTrial(state, account, deviceToken).remainingSeconds;
   if (remainingSeconds < normalizedSeconds) {
     return false;
   }
@@ -1097,11 +1115,20 @@ async function handleGoogleCallback(_req, res, parsedUrl) {
       googleSub: profile.sub || "",
     });
     linkDeviceToAccount(state, pending.deviceToken, account.id);
-    claimOrSyncAccountTrial(state, account, pending.deviceToken);
+    const trialSync = claimOrSyncAccountTrial(state, account, pending.deviceToken);
     delete state.googleStates[oauthState];
     writeState(state);
     const completeUrl = new URL(getPublicUrl("/reg-complete"));
-    completeUrl.searchParams.set("message", `Signed in as ${account.email}.`);
+    completeUrl.searchParams.set(
+      "message",
+      trialSync.reducedByAccount
+        ? `Signed in as ${account.email}. This Google account already used part of the free trial, so your remaining trial time was updated.`
+        : `Signed in as ${account.email}.`
+    );
+    if (trialSync.reducedByAccount) {
+      completeUrl.searchParams.set("trial_notice", "used");
+      completeUrl.searchParams.set("remaining_seconds", String(trialSync.remainingSeconds));
+    }
     if (pending.returnUrl) {
       completeUrl.searchParams.set("return_url", pending.returnUrl);
     }

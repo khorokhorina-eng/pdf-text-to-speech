@@ -60,7 +60,7 @@ let playbackUsageFlushTimer = null;
 let currentAudioBaseSpeed = 1;
 let prefetchedChunk = null;
 let prefetchPromise = null;
-let lastKnownRemainingSeconds = 0;
+let lastKnownRemainingSeconds = null;
 let sessionRemainingSeconds = null;
 let pendingUsageSeconds = 0;
 let lastActivePlaybackTickMs = 0;
@@ -73,6 +73,7 @@ let authState = { signedIn: false, email: "", method: null };
 let minFreePlaybackStartSeconds = 0;
 let activeScreen = "reader";
 let isAuthenticating = false;
+let preAuthRemainingSeconds = null;
 let authSuccessToastTimer = null;
 let authPollingTimer = null;
 let authReturnScreen = "drawer";
@@ -181,7 +182,9 @@ function getPlanPresentation() {
     meta:
       getLiveRemainingSeconds() > 0
         ? `${formatRemainingSeconds(getLiveRemainingSeconds())} remaining in your free trial.`
-        : "Upgrade to unlock paid listening.",
+        : hasKnownTrialRemaining()
+        ? "Upgrade to unlock paid listening."
+        : "Checking your free trial...",
   };
 }
 
@@ -195,7 +198,8 @@ function updateUI() {
     typeof state.message === "string" &&
     state.message.includes("Upgrade to continue");
   limitUpgradeBtn.classList.toggle("hidden", !shouldShowLimitUpgrade);
-  const trialExhausted = !currentSubscription?.active && getLiveRemainingSeconds() <= 0;
+  const trialExhausted =
+    !currentSubscription?.active && hasKnownTrialRemaining() && getLiveRemainingSeconds() <= 0;
   trialEndedNoticeEl.classList.toggle("hidden", !trialExhausted);
   readerControlsEl.classList.toggle("hidden", !currentFileBuffer);
   openFileBtn.classList.toggle("hidden", Boolean(currentFileBuffer));
@@ -237,7 +241,14 @@ function getLiveRemainingSeconds() {
   if (Number.isFinite(sessionRemainingSeconds)) {
     return Math.max(0, sessionRemainingSeconds);
   }
-  return Math.max(0, lastKnownRemainingSeconds);
+  if (Number.isFinite(lastKnownRemainingSeconds)) {
+    return Math.max(0, lastKnownRemainingSeconds);
+  }
+  return 0;
+}
+
+function hasKnownTrialRemaining() {
+  return Number.isFinite(sessionRemainingSeconds) || Number.isFinite(lastKnownRemainingSeconds);
 }
 
 function updateReadingStatus() {
@@ -747,11 +758,26 @@ async function loadAuthState() {
 
   if (isAuthenticating && authState.signedIn) {
     setAuthenticating(false);
+    const remainingBeforeAuth = Number.isFinite(preAuthRemainingSeconds)
+      ? preAuthRemainingSeconds
+      : null;
+    preAuthRemainingSeconds = null;
     if (authReturnScreen === "paywall") {
       setActiveScreen("paywall");
       closeDrawer();
       setPaywallStatus("Signed in. Choose your plan to continue.");
-      void loadSubscriptionStatus();
+      void loadSubscriptionStatus().then(() => {
+        const remainingAfterAuth = getLiveRemainingSeconds();
+        if (
+          Number.isFinite(remainingBeforeAuth) &&
+          remainingAfterAuth < remainingBeforeAuth &&
+          !currentSubscription?.active
+        ) {
+          setPaywallStatus(
+            "This Google account already used part of the free trial, so your remaining trial time was updated."
+          );
+        }
+      });
     } else {
       openDrawer();
     }
@@ -786,6 +812,7 @@ async function refreshQuotaSnapshot() {
 
 async function signInWithGoogle(targetScreen = "drawer") {
   authReturnScreen = targetScreen === "paywall" ? "paywall" : "drawer";
+  preAuthRemainingSeconds = hasKnownTrialRemaining() ? getLiveRemainingSeconds() : null;
   authGoogleBtn.disabled = true;
   accountActionBtn.disabled = true;
   authGoogleBtn.textContent = "Opening Google...";
@@ -963,7 +990,9 @@ async function commitPlaybackUsage() {
 
   const optimisticBaseSeconds = Number.isFinite(sessionRemainingSeconds)
     ? sessionRemainingSeconds
-    : lastKnownRemainingSeconds;
+    : Number.isFinite(lastKnownRemainingSeconds)
+    ? lastKnownRemainingSeconds
+    : 0;
   const optimisticRemainingSeconds = Math.max(0, optimisticBaseSeconds - elapsedSeconds);
 
   try {
@@ -1006,7 +1035,7 @@ async function enforcePaywallBeforePlayback() {
   if (Number.isFinite(quotaRemainingSeconds)) {
     const normalizedQuotaSeconds = Math.max(0, quotaRemainingSeconds);
     remainingSeconds =
-      Number.isFinite(lastKnownRemainingSeconds) && lastKnownRemainingSeconds > 0
+      Number.isFinite(lastKnownRemainingSeconds) && lastKnownRemainingSeconds >= 0
         ? Math.min(lastKnownRemainingSeconds, normalizedQuotaSeconds)
         : normalizedQuotaSeconds;
     lastKnownRemainingSeconds = remainingSeconds;
