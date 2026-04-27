@@ -25,6 +25,7 @@ const closeDrawerBtn = document.getElementById("closeDrawer");
 const drawerBackdropEl = document.getElementById("drawerBackdrop");
 const drawerPlanNameEl = document.getElementById("drawerPlanName");
 const drawerPlanMetaEl = document.getElementById("drawerPlanMeta");
+const drawerTrialNoticeEl = document.getElementById("drawerTrialNotice");
 const drawerEmailEl = document.getElementById("drawerEmail");
 const drawerUpgradeBtn = document.getElementById("drawerUpgrade");
 const authToastEl = document.getElementById("authToast");
@@ -74,9 +75,16 @@ let minFreePlaybackStartSeconds = 0;
 let activeScreen = "reader";
 let isAuthenticating = false;
 let preAuthRemainingSeconds = null;
+let trialAdjustedAfterSignIn = false;
 let authSuccessToastTimer = null;
 let authPollingTimer = null;
+let currentPdfPreviewUrl = "";
 let authReturnScreen = "drawer";
+let activePreparationRunId = 0;
+
+const INITIAL_PREPARED_PAGES = 2;
+const FIRST_CHUNK_MAX_LENGTH = 140;
+const DEFAULT_CHUNK_MAX_LENGTH = 280;
 
 const PLAN_META = {
   monthly: {
@@ -231,6 +239,7 @@ function updateUI() {
   const planPresentation = getPlanPresentation();
   drawerPlanNameEl.textContent = planPresentation.name;
   drawerPlanMetaEl.textContent = planPresentation.meta;
+  drawerTrialNoticeEl?.classList.toggle("hidden", !trialAdjustedAfterSignIn);
   drawerEmailEl.textContent = authState.signedIn ? authState.email : "Guest mode";
   accountActionBtn.textContent = authState.signedIn ? "Sign out" : "Sign in with Google";
   drawerUpgradeBtn.classList.toggle("hidden", currentSubscription?.active);
@@ -482,9 +491,17 @@ function splitLongUnit(unit, maxLength) {
   return parts;
 }
 
-function buildChunks(pages) {
+function buildChunks(pages, options = {}) {
   const chunks = [];
-  const maxLength = 280;
+  const useSmallFirstChunk = Boolean(options.useSmallFirstChunk);
+
+  function pushChunk(value) {
+    const normalizedValue = String(value || "").trim();
+    if (!normalizedValue) {
+      return;
+    }
+    chunks.push(normalizedValue);
+  }
 
   pages.forEach((pageText) => {
     const normalized = normalizeText(pageText);
@@ -493,19 +510,32 @@ function buildChunks(pages) {
     }
 
     const parts = splitIntoSentences(normalized);
-    const units = (parts.length ? parts : [normalized]).flatMap((unit) =>
-      splitLongUnit(unit, maxLength)
+    const firstLimit =
+      useSmallFirstChunk && chunks.length === 0
+        ? FIRST_CHUNK_MAX_LENGTH
+        : DEFAULT_CHUNK_MAX_LENGTH;
+    const units = (parts.length ? parts : [normalized]).flatMap((unit, index) =>
+      splitLongUnit(
+        unit,
+        useSmallFirstChunk && chunks.length === 0 && index === 0
+          ? firstLimit
+          : DEFAULT_CHUNK_MAX_LENGTH
+      )
     );
     let current = "";
 
     units.forEach((unit) => {
+      const maxLength =
+        useSmallFirstChunk && chunks.length === 0 && !current
+          ? FIRST_CHUNK_MAX_LENGTH
+          : DEFAULT_CHUNK_MAX_LENGTH;
       const candidate = current ? `${current} ${unit}` : unit;
       if (candidate.length > maxLength) {
         if (current) {
-          chunks.push(current.trim());
+          pushChunk(current);
           current = unit;
         } else {
-          chunks.push(unit.trim());
+          pushChunk(unit);
           current = "";
         }
       } else {
@@ -514,7 +544,7 @@ function buildChunks(pages) {
     });
 
     if (current) {
-      chunks.push(current.trim());
+      pushChunk(current);
     }
   });
 
@@ -773,17 +803,31 @@ async function loadAuthState() {
           remainingAfterAuth < remainingBeforeAuth &&
           !currentSubscription?.active
         ) {
+          trialAdjustedAfterSignIn = true;
           setPaywallStatus(
             "This Google account already used part of the free trial, so your remaining trial time was updated."
           );
+          updateUI();
         }
       });
     } else {
-      openDrawer();
+      void refreshQuotaSnapshot().then(() => {
+        const remainingAfterAuth = getLiveRemainingSeconds();
+        if (
+          Number.isFinite(remainingBeforeAuth) &&
+          remainingAfterAuth < remainingBeforeAuth &&
+          !currentSubscription?.active
+        ) {
+          trialAdjustedAfterSignIn = true;
+          updateUI();
+        }
+        openDrawer();
+      });
     }
     showAuthSuccessToast();
     authReturnScreen = "drawer";
   } else if (!authState.signedIn && wasSignedIn) {
+    trialAdjustedAfterSignIn = false;
     authToastEl.classList.add("hidden");
   }
 
@@ -1063,14 +1107,100 @@ async function openPdfDocument(arrayBuffer) {
   return loadingTask.promise;
 }
 
+async function openPdfInBrowserTab(file) {
+  if (!file) {
+    return;
+  }
+
+  currentPdfPreviewUrl = URL.createObjectURL(file);
+  await chrome.tabs.create({ url: currentPdfPreviewUrl });
+}
+
 function appendPreparedPage(pageText) {
-  const nextChunks = buildChunks([pageText]);
+  const nextChunks = buildChunks([pageText], {
+    useSmallFirstChunk: textChunks.length === 0,
+  });
   if (!nextChunks.length) {
     return false;
   }
   textChunks.push(...nextChunks);
   state.totalChunks = textChunks.length;
   return true;
+}
+
+async function extractPageText(pdf, pageNumber) {
+  const page = await pdf.getPage(pageNumber);
+  const textContent = await page.getTextContent();
+  return textContent.items
+    .map((item) => item.str)
+    .filter(Boolean)
+    .join(" ");
+}
+
+async function preparePdfPages(pdf, startPage, endPage, runId, onChunkReady) {
+  let languageQueued = false;
+
+  for (let pageNumber = startPage; pageNumber <= endPage; pageNumber += 1) {
+    if (runId !== activePreparationRunId) {
+      return { cancelled: true, languageQueued };
+    }
+
+    const pageText = await extractPageText(pdf, pageNumber);
+    if (runId !== activePreparationRunId) {
+      return { cancelled: true, languageQueued };
+    }
+
+    const addedChunks = appendPreparedPage(pageText);
+
+    if (addedChunks && !languageQueued) {
+      languageQueued = true;
+      const sample = textChunks.slice(0, 3).join(" ").slice(0, 1000);
+      void detectLanguageFromText(sample).then((language) => {
+        if (runId !== activePreparationRunId) {
+          return;
+        }
+        detectedLanguage = language;
+        state.language = detectedLanguage;
+        updateUI();
+      });
+    }
+
+    if (addedChunks) {
+      onChunkReady?.();
+    }
+  }
+
+  return { cancelled: false, languageQueued };
+}
+
+function finishPreparation(runId) {
+  if (runId !== activePreparationRunId) {
+    return;
+  }
+  preparationComplete = true;
+  isPreparingText = false;
+  if (state.status !== "reading" && state.status !== "paused") {
+    setStatus("idle", "Your PDF is being prepared for reading.");
+  }
+}
+
+function continuePreparingRemainingPages(pdf, startPage, runId) {
+  void (async () => {
+    const result = await preparePdfPages(pdf, startPage, pdf.numPages, runId);
+    if (result.cancelled) {
+      return;
+    }
+    finishPreparation(runId);
+  })().catch((error) => {
+    if (runId !== activePreparationRunId) {
+      return;
+    }
+    const details = error && error.message ? error.message : "Unable to prepare the PDF.";
+    currentFileBuffer = null;
+    isPreparingText = false;
+    preparationComplete = false;
+    setStatus("error", details);
+  });
 }
 
 async function waitForPreparedChunks(token) {
@@ -1099,56 +1229,45 @@ async function prepareSelectedFile(file) {
     return;
   }
 
+  const runId = ++activePreparationRunId;
   resetPreparedText();
   state.fileName = file.name || "";
   setStatus("loading", "Preparing PDF text...");
 
   try {
+    await openPdfInBrowserTab(file);
     isPreparingText = true;
     preparationComplete = false;
     currentFileBuffer = await file.arrayBuffer();
     const pdf = await openPdfDocument(currentFileBuffer.slice(0));
+    if (runId !== activePreparationRunId) {
+      return;
+    }
     state.totalPages = pdf.numPages;
     state.currentChunk = 0;
-    let languageQueued = false;
     let firstChunkReady = false;
-
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-      const page = await pdf.getPage(pageNumber);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items
-        .map((item) => item.str)
-        .filter(Boolean)
-        .join(" ");
-      const addedChunks = appendPreparedPage(pageText);
-
-      if (addedChunks && !languageQueued) {
-        languageQueued = true;
-        const sample = textChunks.slice(0, 3).join(" ").slice(0, 1000);
-        void detectLanguageFromText(sample).then((language) => {
-          detectedLanguage = language;
-          state.language = detectedLanguage;
-          updateUI();
-        });
+    const initialPagesEnd = Math.min(INITIAL_PREPARED_PAGES, pdf.numPages);
+    const initialResult = await preparePdfPages(pdf, 1, initialPagesEnd, runId, () => {
+      if (firstChunkReady) {
+        return;
       }
-
-      if (addedChunks && !firstChunkReady) {
-        firstChunkReady = true;
-        if (pendingStartPlayback) {
-          pendingStartPlayback = false;
-          playbackToken += 1;
-          void speakCurrentChunk(playbackToken);
-        } else {
-          setStatus("idle", "Your PDF is being prepared for reading.");
-        }
+      firstChunkReady = true;
+      if (pendingStartPlayback) {
+        pendingStartPlayback = false;
+        playbackToken += 1;
+        void speakCurrentChunk(playbackToken);
+      } else {
+        setStatus("idle", "Your PDF is being prepared for reading.");
       }
+    });
+    if (initialResult.cancelled || runId !== activePreparationRunId) {
+      return;
     }
-
-    preparationComplete = true;
-    isPreparingText = false;
 
     if (!textChunks.length) {
       setStatus("error", "No selectable text found. This PDF might be scanned.");
+      isPreparingText = false;
+      preparationComplete = true;
       return;
     }
 
@@ -1158,9 +1277,12 @@ async function prepareSelectedFile(file) {
       state.language = detectedLanguage;
     }
 
-    if (state.status !== "reading" && state.status !== "paused") {
-      setStatus("idle", "Your PDF is being prepared for reading.");
+    if (pdf.numPages > initialPagesEnd) {
+      continuePreparingRemainingPages(pdf, initialPagesEnd + 1, runId);
+      return;
     }
+
+    finishPreparation(runId);
   } catch (error) {
     const details = error && error.message ? error.message : "Unable to prepare the PDF.";
     currentFileBuffer = null;
@@ -1234,6 +1356,8 @@ async function speakCurrentChunk(token = playbackToken) {
 
   setStatus("loading", `Generating audio... ${formatRemainingSeconds(quota.remainingSeconds)} left`);
 
+  void prefetchNextChunk(currentChunkIndex + 1, token);
+
   let payload;
   try {
     currentAudioBaseSpeed = getEffectiveSpeed(state.speed);
@@ -1279,7 +1403,6 @@ async function speakCurrentChunk(token = playbackToken) {
   try {
     await currentAudio.play();
     lastActivePlaybackTickMs = Date.now();
-    void prefetchNextChunk(currentChunkIndex + 1, token);
     updateReadingStatus();
     startPlaybackUiTimer();
     startPlaybackUsageFlushTimer();

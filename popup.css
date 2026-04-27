@@ -515,6 +515,17 @@ body.drawer-open .profile-drawer {
   font-weight: 500;
 }
 
+.drawer-trial-notice {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(220, 91, 59, 0.1);
+  color: #8d3f2c;
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 520;
+}
+
 .paywall-top {
   padding-top: 0;
 }
