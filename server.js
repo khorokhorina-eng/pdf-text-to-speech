@@ -64,6 +64,8 @@ const STRIPE_ANNUAL_PRICE_ID =
 const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || "";
 const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || "";
 const YANDEX_METRIKA_ID = process.env.YANDEX_METRIKA_ID || "108473321";
+const GA4_MEASUREMENT_ID = process.env.GA4_MEASUREMENT_ID || "G-8NDSFDQLWJ";
+const GA4_API_SECRET = process.env.GA4_API_SECRET || "";
 
 const PLAN_DEFINITIONS = [
   {
@@ -89,6 +91,120 @@ const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function renderGa4Snippet(pagePath, eventName = "", eventParams = null) {
+  if (!GA4_MEASUREMENT_ID) {
+    return "";
+  }
+
+  return `
+    <script async src="https://www.googletagmanager.com/gtag/js?id=${GA4_MEASUREMENT_ID}"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', ${JSON.stringify(GA4_MEASUREMENT_ID)}, ${JSON.stringify({
+        page_path: pagePath || "/",
+      })});
+      ${eventName ? `gtag('event', ${JSON.stringify(eventName)}, ${JSON.stringify(eventParams || {})});` : ""}
+    </script>`;
+}
+
+function sanitizeAnalyticsEventName(name) {
+  const normalized = String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40);
+  return normalized || "";
+}
+
+function sanitizeAnalyticsParams(rawParams) {
+  if (!rawParams || typeof rawParams !== "object" || Array.isArray(rawParams)) {
+    return {};
+  }
+
+  const sanitized = {};
+  for (const [key, value] of Object.entries(rawParams)) {
+    const normalizedKey = String(key || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 40);
+    if (!normalizedKey) {
+      continue;
+    }
+
+    if (typeof value === "string") {
+      sanitized[normalizedKey] = value.slice(0, 100);
+      continue;
+    }
+    if (typeof value === "boolean") {
+      sanitized[normalizedKey] = value ? "true" : "false";
+      continue;
+    }
+    if (Number.isFinite(Number(value))) {
+      sanitized[normalizedKey] = Number(value);
+    }
+  }
+
+  return sanitized;
+}
+
+async function sendGa4Measurement({
+  clientId,
+  userId = "",
+  sessionId = "",
+  eventName,
+  params = {},
+}) {
+  if (!GA4_MEASUREMENT_ID || !GA4_API_SECRET) {
+    return { ok: false, skipped: true, reason: "ga4_not_configured" };
+  }
+
+  const safeEventName = sanitizeAnalyticsEventName(eventName);
+  if (!safeEventName || !clientId) {
+    return { ok: false, skipped: true, reason: "invalid_payload" };
+  }
+
+  const payload = {
+    client_id: String(clientId),
+    events: [
+      {
+        name: safeEventName,
+        params: {
+          session_id: String(sessionId || Date.now()),
+          engagement_time_msec: 1,
+          ...sanitizeAnalyticsParams(params),
+        },
+      },
+    ],
+  };
+
+  if (userId) {
+    payload.user_id = String(userId);
+  }
+
+  const response = await fetch(
+    `https://www.google-analytics.com/mp/collect?measurement_id=${encodeURIComponent(GA4_MEASUREMENT_ID)}&api_secret=${encodeURIComponent(GA4_API_SECRET)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  if (!response.ok) {
+    const details = await response.text().catch(() => "");
+    throw new Error(details || `GA4 request failed with ${response.status}`);
+  }
+
+  return { ok: true };
 }
 
 function randomId(prefix) {
@@ -786,8 +902,13 @@ async function handleAuthMe(req, res, parsedUrl) {
   });
 }
 
-function renderAuthCompletePage(title, message, returnUrl = "") {
+function renderAuthCompletePage(title, message, returnUrl = "", analyticsEvent = null) {
   const safeReturn = sanitizeExtensionReturnUrl(returnUrl);
+  const ga4 = renderGa4Snippet(
+    "/reg-complete",
+    analyticsEvent?.name || "",
+    analyticsEvent?.params || null
+  );
   const metrika = YANDEX_METRIKA_ID
     ? `
     <script type="text/javascript">
@@ -929,12 +1050,155 @@ function renderAuthCompletePage(title, message, returnUrl = "") {
   </head>
   <body>
     ${cta}
+    ${ga4}
     ${metrika}
     ${safeReturn ? `<script>
       setTimeout(function () {
         window.location.replace(${JSON.stringify(safeReturn)});
       }, 1400);
     </script>` : ""}
+  </body>
+</html>`;
+}
+
+function renderThankYouPage(title, message, returnUrl = "", purchase = null) {
+  const safeReturn = sanitizeExtensionReturnUrl(returnUrl);
+  const purchasePayload =
+    purchase &&
+    Number.isFinite(Number(purchase.value)) &&
+    purchase.currency &&
+    purchase.transactionId
+      ? {
+          transaction_id: String(purchase.transactionId),
+          value: Number(purchase.value),
+          currency: String(purchase.currency).toUpperCase(),
+          items: [
+            {
+              item_id: String(purchase.planId || "pdf-text-to-speech-plan"),
+              item_name: String(purchase.planName || "PDF Text to Speech plan"),
+              price: Number(purchase.value),
+              quantity: 1,
+            },
+          ],
+        }
+      : null;
+  const ga4 = renderGa4Snippet("/thank-you", purchasePayload ? "purchase" : "", purchasePayload);
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${title}</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Manrope, "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        min-height: 100vh;
+        padding: 28px 18px;
+        background:
+          radial-gradient(circle at top, rgba(247, 200, 182, 0.26), transparent 30%),
+          radial-gradient(circle at top left, rgba(239, 115, 80, 0.12), transparent 28%),
+          linear-gradient(180deg, #fffaf6 0%, #fbf5f1 100%);
+        color: #1f1b17;
+      }
+      .success-card {
+        max-width: 760px;
+        margin: 0 auto;
+        background: rgba(255, 255, 255, 0.94);
+        border: 1px solid #eadbd2;
+        border-radius: 28px;
+        padding: 28px;
+        box-shadow: 0 18px 42px rgba(27, 27, 27, 0.06);
+      }
+      .eyebrow {
+        margin: 0 0 10px;
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: #ef7350;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: clamp(32px, 6vw, 52px);
+        line-height: 1;
+        letter-spacing: -0.025em;
+        font-weight: 620;
+        color: #2b2724;
+      }
+      .lead {
+        margin: 0 0 22px;
+        font-size: 18px;
+        line-height: 1.45;
+        font-weight: 500;
+      }
+      .muted {
+        color: #6f665c;
+        font-size: 16px;
+        line-height: 1.5;
+        margin: 0;
+        font-weight: 500;
+      }
+      .status-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 52px;
+        height: 52px;
+        margin: 0 auto 18px;
+        border-radius: 999px;
+        font-size: 28px;
+        font-weight: 650;
+      }
+      .success-icon {
+        background: rgba(34, 197, 94, 0.14);
+        color: #16a34a;
+      }
+      .checkmark {
+        width: 18px;
+        height: 10px;
+        border-left: 4px solid currentColor;
+        border-bottom: 4px solid currentColor;
+        transform: rotate(-45deg) translateY(-2px);
+      }
+      .secondary {
+        margin-top: 6px;
+        font-size: 15px;
+      }
+      @media (max-width: 640px) {
+        .success-card { padding: 22px 18px; }
+        .lead, .muted { font-size: 17px; }
+        .secondary { font-size: 14px; }
+      }
+    </style>
+    ${ga4}
+  </head>
+  <body>
+    <section class="success-card">
+      <div class="status-icon success-icon" aria-hidden="true">
+        <span class="checkmark"></span>
+      </div>
+      <p class="eyebrow">Payment successful</p>
+      <h1>${title}</h1>
+      <p class="lead">${message}</p>
+      <p class="muted">Your plan is now active.</p>
+      ${
+        safeReturn
+          ? '<p class="muted secondary">Redirecting you back to the extension...</p>'
+          : '<p class="muted secondary">You can close this page safely.</p>'
+      }
+    </section>
+    ${
+      safeReturn
+        ? `<script>
+      setTimeout(function () {
+        window.location.replace(${JSON.stringify(safeReturn)});
+      }, 1800);
+    </script>`
+        : ""
+    }
   </body>
 </html>`;
 }
@@ -1147,7 +1411,17 @@ async function handleGoogleCallback(_req, res, parsedUrl) {
 function handleRegistrationComplete(res, parsedUrl) {
   const returnUrl = sanitizeExtensionReturnUrl(parsedUrl.searchParams.get("return_url") || "");
   const message = parsedUrl.searchParams.get("message") || "Signed in successfully.";
-  sendHtml(res, 200, renderAuthCompletePage("Login is successful", message, returnUrl));
+  sendHtml(
+    res,
+    200,
+    renderAuthCompletePage("Login is successful", message, returnUrl, {
+      name: "login",
+      params: {
+        method: "Google",
+        destination: "pdf_text_to_speech_extension",
+      },
+    })
+  );
 }
 
 async function handleAuthLogout(req, res, parsedUrl) {
@@ -1515,22 +1789,79 @@ async function handleTts(req, res, parsedUrl) {
   }
 }
 
-function handleSuccessPage(res, parsedUrl) {
+async function handleAnalyticsEvent(req, res, parsedUrl) {
+  let body = {};
+  try {
+    body = await parseJsonBody(req);
+  } catch (error) {
+    sendJson(res, 400, { error: error.message || "Invalid request body." });
+    return;
+  }
+
+  const deviceToken = getDeviceToken(req, parsedUrl, body);
+  const eventName = sanitizeAnalyticsEventName(body.name || body.event || "");
+  const sessionId = String(body.sessionId || body.session_id || Date.now());
+
+  if (!deviceToken) {
+    sendJson(res, 400, { error: "Missing device token." });
+    return;
+  }
+
+  if (!eventName) {
+    sendJson(res, 400, { error: "Missing event name." });
+    return;
+  }
+
+  const state = readState();
+  const account = getAccountForDevice(state, deviceToken);
+
+  try {
+    const result = await sendGa4Measurement({
+      clientId: deviceToken,
+      userId: account?.id || "",
+      sessionId,
+      eventName,
+      params: {
+        product: "pdf_text_to_speech",
+        signed_in: Boolean(account?.id),
+        ...sanitizeAnalyticsParams(body.params),
+      },
+    });
+    sendJson(res, 200, result);
+  } catch (error) {
+    sendJson(res, 502, { error: error.message || "Failed to send analytics event." });
+  }
+}
+
+async function handleSuccessPage(res, parsedUrl) {
   const state = readState();
   const sessionId = parsedUrl.searchParams.get("session_id") || "";
   const mappedReturnUrl = sessionId ? state.sessionToReturnUrl?.[sessionId] || "" : "";
   const returnUrl =
     sanitizeExtensionReturnUrl(parsedUrl.searchParams.get("return_url") || "") ||
     sanitizeExtensionReturnUrl(mappedReturnUrl);
-  sendHtml(
-    res,
-    200,
-    renderAuthCompletePage(
-      "Thank you",
-      "Your payment was successful. Your plan is now active.",
-      returnUrl
-    )
-  );
+  let purchase = null;
+
+  if (stripe && sessionId) {
+    try {
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      const planId =
+        session.metadata?.planId ||
+        session.subscription_details?.metadata?.planId ||
+        "pdf-text-to-speech-plan";
+      purchase = {
+        transactionId: session.id,
+        value: Number(session.amount_total || 0) / 100,
+        currency: session.currency || "usd",
+        planId,
+        planName: getPlanById(planId)?.name || "PDF Text to Speech plan",
+      };
+    } catch (_error) {
+      purchase = null;
+    }
+  }
+
+  sendHtml(res, 200, renderThankYouPage("Thank you", "Your payment was successful.", returnUrl, purchase));
 }
 
 function handleCancelPage(res) {
@@ -1599,6 +1930,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && parsedUrl.pathname === "/analytics/event") {
+    await handleAnalyticsEvent(req, res, parsedUrl);
+    return;
+  }
+
   if (
     req.method === "POST" &&
     (parsedUrl.pathname === "/stripe/checkout-session" || parsedUrl.pathname === "/checkout")
@@ -1624,7 +1960,7 @@ const server = http.createServer(async (req, res) => {
     req.method === "GET" &&
     (parsedUrl.pathname === "/paywall/success" || parsedUrl.pathname === "/thank-you")
   ) {
-    handleSuccessPage(res, parsedUrl);
+    await handleSuccessPage(res, parsedUrl);
     return;
   }
 

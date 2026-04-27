@@ -484,6 +484,23 @@ async function createCheckoutSession(planId, returnUrl) {
   };
 }
 
+async function trackAnalyticsEvent(name, params = {}, sessionId = "") {
+  const data = await fetchJsonFromEndpoints("/analytics/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name,
+      params,
+      sessionId,
+    }),
+  });
+  return {
+    tracked: data?.ok !== false,
+    skipped: !!data?.skipped,
+    reason: data?.reason || null,
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message?.type) {
     return false;
@@ -572,6 +589,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => {
         const errorMessage =
           error && error.message ? error.message : "Failed to refresh subscription status.";
+        sendResponse({ ok: false, error: errorMessage });
+      });
+    return true;
+  }
+
+  if (message.type === "trackAnalyticsEvent") {
+    trackAnalyticsEvent(message.name, message.params, message.sessionId)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => {
+        const errorMessage =
+          error && error.message ? error.message : "Failed to track analytics event.";
         sendResponse({ ok: false, error: errorMessage });
       });
     return true;

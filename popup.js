@@ -37,6 +37,8 @@ const readerControlsEl = document.getElementById("readerControls");
 const REMOTE_API_BASE_URL = "https://pdftext2speech.com";
 const DEVICE_TOKEN_KEY = "deviceToken";
 const TRIAL_STATE_KEY = "trialState";
+const ANALYTICS_SESSION_ID =
+  `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
 
 const state = {
   status: "idle",
@@ -61,6 +63,8 @@ let playbackUsageFlushTimer = null;
 let currentAudioBaseSpeed = 1;
 let prefetchedChunk = null;
 let prefetchPromise = null;
+let prefetchedChunkIndex = -1;
+let prefetchedChunkSpeed = null;
 let lastKnownRemainingSeconds = null;
 let sessionRemainingSeconds = null;
 let pendingUsageSeconds = 0;
@@ -81,6 +85,7 @@ let authPollingTimer = null;
 let currentPdfPreviewUrl = "";
 let authReturnScreen = "drawer";
 let activePreparationRunId = 0;
+let extensionOpenedTracked = false;
 
 const INITIAL_PREPARED_PAGES = 2;
 const FIRST_CHUNK_MAX_LENGTH = 140;
@@ -201,6 +206,7 @@ function updateUI() {
   statusEl.textContent = STATUS_LABELS[state.status] || "Ready";
   hintEl.textContent = state.message || " ";
   pauseBtn.textContent = state.status === "paused" ? "Resume" : "Pause";
+  const isLoading = state.status === "loading";
   const shouldShowLimitUpgrade =
     state.status === "error" &&
     typeof state.message === "string" &&
@@ -212,10 +218,13 @@ function updateUI() {
   readerControlsEl.classList.toggle("hidden", !currentFileBuffer);
   openFileBtn.classList.toggle("hidden", Boolean(currentFileBuffer));
   playBtn.disabled =
-    !currentFileBuffer || state.status === "reading" || trialExhausted;
+    !currentFileBuffer || state.status === "reading" || isLoading || trialExhausted;
+  playBtn.textContent = isLoading ? "Loading..." : "Read Aloud";
+  playBtn.classList.toggle("is-loading", isLoading);
+  playBtn.setAttribute("aria-busy", isLoading ? "true" : "false");
   pauseBtn.disabled = !(state.status === "reading" || state.status === "paused");
   stopBtn.disabled = !(state.status === "reading" || state.status === "paused");
-  speedSelect.disabled = state.status === "loading";
+  speedSelect.disabled = isLoading;
   const activePlanId = currentSubscription?.plan?.planId || "";
   if (continueCheckoutMonthlyBtn) {
     const isCurrentMonthly = currentSubscription?.active && activePlanId === "monthly";
@@ -409,6 +418,8 @@ function cleanupCurrentAudio() {
 function clearPrefetch() {
   prefetchedChunk = null;
   prefetchPromise = null;
+  prefetchedChunkIndex = -1;
+  prefetchedChunkSpeed = null;
 }
 
 function resetSessionQuotaTracking() {
@@ -648,6 +659,8 @@ async function prefetchNextChunk(nextIndex, token) {
 
   const chunkText = textChunks[nextIndex];
   const requestedSpeed = state.speed;
+  prefetchedChunkIndex = nextIndex;
+  prefetchedChunkSpeed = requestedSpeed;
   prefetchPromise = requestTtsBytes(chunkText, requestedSpeed)
     .then((payload) => {
       if (token !== playbackToken) {
@@ -662,9 +675,69 @@ async function prefetchNextChunk(nextIndex, token) {
     .catch(() => null)
     .finally(() => {
       prefetchPromise = null;
+      if (!prefetchedChunk || prefetchedChunk.index !== prefetchedChunkIndex) {
+        prefetchedChunkIndex = -1;
+        prefetchedChunkSpeed = null;
+      }
     });
 
   return prefetchPromise;
+}
+
+async function resolveChunkPayload(chunkIndex, token) {
+  currentAudioBaseSpeed = getEffectiveSpeed(state.speed);
+
+  if (
+    prefetchedChunk &&
+    prefetchedChunk.index === chunkIndex &&
+    prefetchedChunk.speed === state.speed
+  ) {
+    const payload = prefetchedChunk.payload;
+    prefetchedChunk = null;
+    prefetchedChunkIndex = -1;
+    prefetchedChunkSpeed = null;
+    return payload;
+  }
+
+  if (
+    prefetchPromise &&
+    prefetchedChunkIndex === chunkIndex &&
+    prefetchedChunkSpeed === state.speed
+  ) {
+    await prefetchPromise;
+    if (
+      token === playbackToken &&
+      prefetchedChunk &&
+      prefetchedChunk.index === chunkIndex &&
+      prefetchedChunk.speed === state.speed
+    ) {
+      const payload = prefetchedChunk.payload;
+      prefetchedChunk = null;
+      prefetchedChunkIndex = -1;
+      prefetchedChunkSpeed = null;
+      return payload;
+    }
+  }
+
+  return requestTtsBytes(textChunks[chunkIndex]);
+}
+
+function commitPlaybackUsageInBackground(token) {
+  void commitPlaybackUsage()
+    .then((usage) => {
+      if (token !== playbackToken || state.status !== "reading") {
+        return;
+      }
+      if (usage && Number(usage.remainingSeconds) <= 0) {
+        playbackToken += 1;
+        cleanupCurrentAudio();
+        lastKnownRemainingSeconds = 0;
+        sessionRemainingSeconds = 0;
+        resetSessionQuotaTracking();
+        showPaywallLimitReached();
+      }
+    })
+    .catch(() => null);
 }
 
 function sendRuntimeMessage(message) {
@@ -681,6 +754,15 @@ function sendRuntimeMessage(message) {
       resolve(response);
     });
   });
+}
+
+function trackAnalyticsEvent(name, params = {}) {
+  return sendRuntimeMessage({
+    type: "trackAnalyticsEvent",
+    name,
+    params,
+    sessionId: ANALYTICS_SESSION_ID,
+  }).catch(() => null);
 }
 
 function readLocalStorage(keys) {
@@ -834,6 +916,20 @@ async function loadAuthState() {
   updateAuthUI();
 }
 
+function trackExtensionOpened() {
+  if (extensionOpenedTracked) {
+    return;
+  }
+  extensionOpenedTracked = true;
+  void trackAnalyticsEvent("extension_opened", {
+    signed_in: authState.signedIn,
+    has_pdf: Boolean(currentFileBuffer),
+    trial_seconds_left: Number.isFinite(getLiveRemainingSeconds())
+      ? getLiveRemainingSeconds()
+      : -1,
+  });
+}
+
 async function refreshQuotaSnapshot() {
   if (state.status === "reading" || state.status === "paused") {
     return;
@@ -854,9 +950,17 @@ async function refreshQuotaSnapshot() {
   }
 }
 
-async function signInWithGoogle(targetScreen = "drawer") {
+async function signInWithGoogle(targetScreen = "drawer", source = "unknown") {
   authReturnScreen = targetScreen === "paywall" ? "paywall" : "drawer";
   preAuthRemainingSeconds = hasKnownTrialRemaining() ? getLiveRemainingSeconds() : null;
+  void trackAnalyticsEvent("login_started", {
+    source,
+    target_screen: authReturnScreen,
+    signed_in: authState.signedIn,
+    trial_seconds_left: Number.isFinite(getLiveRemainingSeconds())
+      ? getLiveRemainingSeconds()
+      : -1,
+  });
   authGoogleBtn.disabled = true;
   accountActionBtn.disabled = true;
   authGoogleBtn.textContent = "Opening Google...";
@@ -920,9 +1024,20 @@ async function loadSubscriptionStatus() {
   }
 }
 
-function openPaywall() {
+function openPaywall(source = "unknown") {
   setActiveScreen("paywall");
   closeDrawer();
+  const trialSecondsLeft = Number.isFinite(getLiveRemainingSeconds())
+    ? getLiveRemainingSeconds()
+    : -1;
+  const trialExhausted = !currentSubscription?.active && trialSecondsLeft <= 0;
+  void trackAnalyticsEvent("paywall_opened", {
+    source,
+    signed_in: authState.signedIn,
+    trial_seconds_left: trialSecondsLeft,
+    trial_exhausted: trialExhausted,
+    has_pdf: Boolean(currentFileBuffer),
+  });
   if (!currentSubscription?.active && getLiveRemainingSeconds() <= 0) {
     setPaywallStatus("Your free trial has ended. Pay for a plan to keep listening.");
   }
@@ -938,7 +1053,7 @@ function closePaywall() {
 async function openCheckoutForPlan(planId) {
   if (!authState.signedIn) {
     setPaywallStatus("Continue with Google before checkout.");
-    await signInWithGoogle("paywall");
+    await signInWithGoogle("paywall", `checkout_${planId}`);
     return;
   }
 
@@ -946,7 +1061,7 @@ async function openCheckoutForPlan(planId) {
 
   if (!authState.signedIn) {
     setPaywallStatus("Continue with Google before checkout.");
-    await signInWithGoogle("paywall");
+    await signInWithGoogle("paywall", `checkout_${planId}`);
     return;
   }
 
@@ -970,6 +1085,13 @@ async function openCheckoutForPlan(planId) {
     if (!result.url) {
       throw new Error("Checkout URL is missing.");
     }
+    void trackAnalyticsEvent("checkout_started", {
+      plan_id: planId,
+      signed_in: authState.signedIn,
+      trial_seconds_left: Number.isFinite(getLiveRemainingSeconds())
+        ? getLiveRemainingSeconds()
+        : -1,
+    });
     chrome.tabs.create({ url: result.url });
     setPaywallStatus("Stripe Checkout opened in a new tab.");
   } catch (error) {
@@ -1019,9 +1141,13 @@ function getEffectiveSpeed(value = state.speed) {
 
 function showPaywallLimitReached() {
   stopPlaybackUiTimer();
+  void trackAnalyticsEvent("trial_exhausted", {
+    signed_in: authState.signedIn,
+    has_pdf: Boolean(currentFileBuffer),
+  });
   setStatus("error", paywallReachedMessage());
   updateUI();
-  openPaywall();
+  openPaywall("trial_exhausted");
 }
 
 async function commitPlaybackUsage() {
@@ -1245,6 +1371,11 @@ async function prepareSelectedFile(file) {
     }
     state.totalPages = pdf.numPages;
     state.currentChunk = 0;
+    void trackAnalyticsEvent("pdf_selected", {
+      page_count: pdf.numPages,
+      file_size_kb: Math.max(1, Math.round((file.size || 0) / 1024)),
+      signed_in: authState.signedIn,
+    });
     let firstChunkReady = false;
     const initialPagesEnd = Math.min(INITIAL_PREPARED_PAGES, pdf.numPages);
     const initialResult = await preparePdfPages(pdf, 1, initialPagesEnd, runId, () => {
@@ -1301,15 +1432,7 @@ async function handleAudioEnded(token) {
     clearTimeout(paywallStopTimer);
     paywallStopTimer = null;
   }
-  const usage = await commitPlaybackUsage().catch(() => null);
-  if (usage && Number(usage.remainingSeconds) <= 0) {
-    cleanupCurrentAudio();
-    lastKnownRemainingSeconds = 0;
-    sessionRemainingSeconds = 0;
-    resetSessionQuotaTracking();
-    showPaywallLimitReached();
-    return;
-  }
+  commitPlaybackUsageInBackground(token);
   currentChunkIndex += 1;
 
   if (currentChunkIndex >= textChunks.length) {
@@ -1360,17 +1483,7 @@ async function speakCurrentChunk(token = playbackToken) {
 
   let payload;
   try {
-    currentAudioBaseSpeed = getEffectiveSpeed(state.speed);
-    if (
-      prefetchedChunk &&
-      prefetchedChunk.index === currentChunkIndex &&
-      prefetchedChunk.speed === state.speed
-    ) {
-      payload = prefetchedChunk.payload;
-      prefetchedChunk = null;
-    } else {
-      payload = await requestTtsBytes(textChunks[currentChunkIndex]);
-    }
+    payload = await resolveChunkPayload(currentChunkIndex, token);
   } catch (error) {
     const details = error && error.message ? error.message : "TTS request failed.";
     setStatus("error", details);
@@ -1430,6 +1543,16 @@ async function startPlayback() {
   }
 
   pendingStartPlayback = false;
+  void trackAnalyticsEvent("read_aloud_clicked", {
+    speed: state.speed,
+    page_count: state.totalPages,
+    chunk_count: textChunks.length,
+    language: detectedLanguage || "unknown",
+    signed_in: authState.signedIn,
+    trial_seconds_left: Number.isFinite(getLiveRemainingSeconds())
+      ? getLiveRemainingSeconds()
+      : -1,
+  });
   playbackToken += 1;
   await speakCurrentChunk(playbackToken);
 }
@@ -1545,7 +1668,8 @@ drawerBackdropEl.addEventListener("click", () => {
 });
 
 drawerUpgradeBtn.addEventListener("click", () => {
-  openPaywall();
+  void trackAnalyticsEvent("upgrade_clicked", { source: "drawer_upgrade" });
+  openPaywall("drawer_upgrade");
 });
 
 accountActionBtn.addEventListener("click", () => {
@@ -1553,11 +1677,12 @@ accountActionBtn.addEventListener("click", () => {
     void signOutAccount();
     return;
   }
-  void signInWithGoogle("drawer");
+  void signInWithGoogle("drawer", "account_button");
 });
 
 limitUpgradeBtn.addEventListener("click", () => {
-  openPaywall();
+  void trackAnalyticsEvent("upgrade_clicked", { source: "limit_notice" });
+  openPaywall("limit_notice");
 });
 
 backToReaderBtn.addEventListener("click", () => {
@@ -1566,7 +1691,7 @@ backToReaderBtn.addEventListener("click", () => {
 
 continueCheckoutMonthlyBtn?.addEventListener("click", () => {
   if (!authState.signedIn) {
-    void signInWithGoogle("paywall");
+    void signInWithGoogle("paywall", "checkout_monthly");
     return;
   }
   void openCheckoutForPlan("monthly");
@@ -1574,18 +1699,19 @@ continueCheckoutMonthlyBtn?.addEventListener("click", () => {
 
 continueCheckoutAnnualBtn?.addEventListener("click", () => {
   if (!authState.signedIn) {
-    void signInWithGoogle("paywall");
+    void signInWithGoogle("paywall", "checkout_annual");
     return;
   }
   void openCheckoutForPlan("annual");
 });
 
 authGoogleBtn.addEventListener("click", () => {
-  void signInWithGoogle("paywall");
+  void signInWithGoogle("paywall", "paywall_google_button");
 });
 
 trialUpgradeBtn?.addEventListener("click", () => {
-  openPaywall();
+  void trackAnalyticsEvent("upgrade_clicked", { source: "trial_ended_notice" });
+  openPaywall("trial_ended_notice");
 });
 
 window.addEventListener("focus", () => {
@@ -1604,7 +1730,11 @@ window.addEventListener("focus", () => {
 
 setActiveScreen("reader");
 updateUI();
-void loadAuthState().then(() => refreshQuotaSnapshot());
+void loadAuthState()
+  .then(() => refreshQuotaSnapshot())
+  .then(() => {
+    trackExtensionOpened();
+  });
 
 window.addEventListener("beforeunload", () => {
   commitPlaybackUsage().catch(() => null);
