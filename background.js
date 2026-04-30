@@ -1,4 +1,5 @@
 const REMOTE_API_BASE_URL = "https://pdftext2speech.com";
+const UNINSTALL_URL = `${REMOTE_API_BASE_URL}/uninstall.html`;
 
 const TTS_ENDPOINTS = [
   `${REMOTE_API_BASE_URL}/tts`,
@@ -35,6 +36,7 @@ function enableActionSidePanel() {
 }
 
 enableActionSidePanel();
+chrome.runtime.setUninstallURL?.(UNINSTALL_URL).catch(() => {});
 
 chrome.runtime.onInstalled.addListener((details) => {
   enableActionSidePanel();

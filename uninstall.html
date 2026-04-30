@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PDF Text to Speech Feedback</title>
+    <link rel="stylesheet" href="uninstall.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="card hero">
+        <p class="eyebrow">PDF Text to Speech</p>
+        <h1>Why have you deleted the app?</h1>
+        <p class="intro">
+          One short answer is enough. Your feedback helps improve the extension.
+        </p>
+      </section>
+
+      <section class="card form-card">
+        <iframe
+          class="form-frame"
+          title="Uninstall feedback form"
+          src=""
+          data-form-src="https://docs.google.com/forms/d/e/1FAIpQLSdAKg7rhAq23nLsY80n92-IjBYrmNCwKd5JAvEbkV8lD6_Xjg/viewform?embedded=true"
+          loading="lazy"
+          referrerpolicy="strict-origin-when-cross-origin"
+        ></iframe>
+        <div class="form-placeholder" id="form-placeholder">
+          <p>
+            Add your Google Form embed URL to
+            <code>data-form-src</code> in <code>uninstall.html</code>.
+          </p>
+          <p>
+            The form should contain one question:
+            <strong>Why have you deleted the app?</strong>
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const frame = document.querySelector(".form-frame");
+      const placeholder = document.getElementById("form-placeholder");
+      const formSrc = frame?.dataset?.formSrc || "";
+      if (formSrc && !formSrc.includes("PASTE_GOOGLE_FORM_EMBED_URL_HERE")) {
+        frame.src = formSrc;
+        placeholder.hidden = true;
+      } else {
+        frame.hidden = true;
+      }
+    </script>
+  </body>
+</html>

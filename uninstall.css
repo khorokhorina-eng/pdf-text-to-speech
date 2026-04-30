@@ -1,0 +1,127 @@
+:root {
+  --bg: #fbf5f1;
+  --panel: rgba(255, 255, 255, 0.94);
+  --ink: #2b2724;
+  --muted: #6f665c;
+  --line: #eadbd2;
+  --accent: #ef7350;
+  --shadow: 0 18px 42px rgba(27, 27, 27, 0.06);
+  --font-ui: Manrope, "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-ui);
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top, rgba(247, 200, 182, 0.26), transparent 30%),
+    radial-gradient(circle at top left, rgba(239, 115, 80, 0.12), transparent 28%),
+    linear-gradient(180deg, #fffaf6 0%, var(--bg) 100%);
+}
+
+.page {
+  width: min(820px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 44px 0 56px;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.hero,
+.form-card {
+  padding: 22px;
+}
+
+.hero {
+  margin-bottom: 18px;
+}
+
+.eyebrow {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+h1 {
+  margin: 0 0 12px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-size: clamp(30px, 5vw, 46px);
+  font-weight: 620;
+}
+
+.intro,
+.form-placeholder p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.form-card {
+  min-height: 640px;
+}
+
+.form-frame {
+  width: 100%;
+  min-height: 592px;
+  border: 0;
+  border-radius: 18px;
+  background: #fff;
+}
+
+.form-placeholder {
+  display: grid;
+  gap: 10px;
+  min-height: 592px;
+  place-content: center;
+  padding: 24px;
+  border: 1px dashed var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  text-align: center;
+}
+
+code {
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid var(--line);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .page {
+    width: min(100% - 20px, 820px);
+    padding: 28px 0 40px;
+  }
+
+  .hero,
+  .form-card {
+    padding: 16px;
+    border-radius: 20px;
+  }
+
+  .form-card {
+    min-height: 560px;
+  }
+
+  .form-frame,
+  .form-placeholder {
+    min-height: 520px;
+  }
+}
