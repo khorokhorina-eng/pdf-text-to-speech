@@ -170,7 +170,7 @@ function resetSessionQuotaTracking() {
 }
 
 function paywallReachedMessage() {
-  return "Your trial has ended. Upgrade to keep listening.";
+  return "Today's free listening is over. Your free limit will reset tomorrow, or you can unlock unlimited listening now.";
 }
 
 async function exhaustPlaybackQuota(token = playbackToken) {

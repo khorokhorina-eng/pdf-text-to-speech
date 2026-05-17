@@ -45,7 +45,7 @@ const OPENAI_TTS_MODEL = process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts";
 const OPENAI_TTS_VOICE = process.env.OPENAI_TTS_VOICE || "alloy";
 const FREE_TRIAL_SECONDS = Math.max(
   1,
-  Number(process.env.FREE_TRIAL_SECONDS || Number(process.env.FREE_MINUTES || 2) * 60)
+  Number(process.env.FREE_TRIAL_SECONDS || 300)
 );
 const MIN_FREE_PLAYBACK_START_SECONDS = Math.max(
   0,
@@ -91,6 +91,10 @@ const stripe = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function getTrialDayKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
 }
 
 function renderGa4Snippet(pagePath, eventName = "", eventParams = null) {
@@ -144,6 +148,39 @@ function sanitizeAnalyticsParams(rawParams) {
     }
     if (typeof value === "boolean") {
       sanitized[normalizedKey] = value ? "true" : "false";
+      continue;
+    }
+    if (Array.isArray(value)) {
+      const normalizedItems = value
+        .map((entry) => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+            return null;
+          }
+          const nextEntry = {};
+          for (const [itemKey, itemValue] of Object.entries(entry)) {
+            const nextKey = String(itemKey || "")
+              .trim()
+              .toLowerCase()
+              .replace(/[^a-z0-9_]+/g, "_")
+              .replace(/^_+|_+$/g, "")
+              .slice(0, 40);
+            if (!nextKey) {
+              continue;
+            }
+            if (typeof itemValue === "string") {
+              nextEntry[nextKey] = itemValue.slice(0, 100);
+            } else if (typeof itemValue === "boolean") {
+              nextEntry[nextKey] = itemValue ? "true" : "false";
+            } else if (Number.isFinite(Number(itemValue))) {
+              nextEntry[nextKey] = Number(itemValue);
+            }
+          }
+          return Object.keys(nextEntry).length ? nextEntry : null;
+        })
+        .filter(Boolean);
+      if (normalizedItems.length) {
+        sanitized[normalizedKey] = normalizedItems;
+      }
       continue;
     }
     if (Number.isFinite(Number(value))) {
@@ -224,6 +261,7 @@ function createEmptyState() {
     customerToAccount: {},
     sessionToAccount: {},
     sessionToReturnUrl: {},
+    purchaseEventsSent: {},
     googleStates: {},
   };
 }
@@ -243,6 +281,35 @@ function cleanupState(state) {
       delete state.googleStates[token];
     }
   });
+
+  Object.entries(state.purchaseEventsSent || {}).forEach(([sessionId, sentAt]) => {
+    const timestamp = Date.parse(sentAt || "");
+    if (!Number.isFinite(timestamp) || timestamp < now - 1000 * 60 * 60 * 24 * 30) {
+      delete state.purchaseEventsSent[sessionId];
+    }
+  });
+}
+
+function buildPurchaseAnalyticsParamsFromSession(session, planLookup, fallbackPlanId, fallbackPlanName) {
+  const planId =
+    session?.metadata?.planId ||
+    session?.subscription_details?.metadata?.planId ||
+    fallbackPlanId;
+  const planName = planLookup(planId)?.name || fallbackPlanName;
+  const amount = Number(session?.amount_total || 0) / 100;
+  return {
+    transaction_id: String(session?.id || ""),
+    value: amount,
+    currency: String(session?.currency || "usd").toUpperCase(),
+    items: [
+      {
+        item_id: String(planId || fallbackPlanId),
+        item_name: String(planName),
+        price: amount,
+        quantity: 1,
+      },
+    ],
+  };
 }
 
 function readState() {
@@ -379,6 +446,39 @@ function getPlanByStripePriceId(priceId) {
   return PLAN_DEFINITIONS.find((plan) => plan.stripePriceId === priceId) || null;
 }
 
+function getClientTimeZone(req, parsedUrl, body) {
+  const raw =
+    req.headers["x-time-zone"] ||
+    parsedUrl.searchParams.get("time_zone") ||
+    body?.time_zone ||
+    body?.timeZone ||
+    "";
+  const candidate = String(raw || "").trim();
+  if (!candidate) {
+    return "UTC";
+  }
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date());
+    return candidate;
+  } catch (_error) {
+    return "UTC";
+  }
+}
+
+function getTrialDayKeyForTimeZone(timeZone = "UTC", date = new Date()) {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    return formatter.format(date);
+  } catch (_error) {
+    return getTrialDayKey(date);
+  }
+}
+
 function getDeviceToken(req, parsedUrl, body) {
   return (
     req.headers["x-device-token"] ||
@@ -449,10 +549,13 @@ function normalizeSeconds(value, fallback = 0) {
   return Math.max(0, Math.floor(Number(value)));
 }
 
-function getOrCreateDeviceUsage(state, deviceToken) {
+function getOrCreateDeviceUsage(state, deviceToken, timeZone = "UTC") {
+  const currentTrialDayKey = getTrialDayKeyForTimeZone(timeZone);
   if (!deviceToken) {
     return {
       remainingSeconds: 0,
+      trialDayKey: currentTrialDayKey,
+      timeZone,
       createdAt: nowIso(),
       updatedAt: nowIso(),
     };
@@ -461,12 +564,21 @@ function getOrCreateDeviceUsage(state, deviceToken) {
   if (!state.deviceUsageByToken[deviceToken]) {
     state.deviceUsageByToken[deviceToken] = {
       remainingSeconds: FREE_TRIAL_SECONDS,
+      trialDayKey: currentTrialDayKey,
+      timeZone,
       createdAt: nowIso(),
       updatedAt: nowIso(),
     };
   }
 
   const usage = state.deviceUsageByToken[deviceToken];
+  usage.timeZone = timeZone || usage.timeZone || "UTC";
+  if (usage.trialDayKey !== currentTrialDayKey) {
+    usage.remainingSeconds = FREE_TRIAL_SECONDS;
+    usage.trialDayKey = currentTrialDayKey;
+    usage.timeZone = timeZone || usage.timeZone || "UTC";
+    usage.updatedAt = nowIso();
+  }
   const fallbackSeconds = Number.isFinite(Number(usage.minutesLeft))
     ? Math.max(
         0,
@@ -483,6 +595,8 @@ function getOrCreateDeviceUsage(state, deviceToken) {
     Math.max(0, Math.floor(Number(usage.remainingSeconds)))
   );
   usage.minutesLeft = Math.ceil(usage.remainingSeconds / 60);
+  usage.trialDayKey = usage.trialDayKey || currentTrialDayKey;
+  usage.timeZone = usage.timeZone || timeZone || "UTC";
   usage.updatedAt = usage.updatedAt || nowIso();
   usage.createdAt = usage.createdAt || nowIso();
   return usage;
@@ -499,14 +613,16 @@ function hasClaimedAccountTrial(account) {
   );
 }
 
-function setDeviceUsageRemainingSeconds(state, deviceToken, remainingSeconds) {
+function setDeviceUsageRemainingSeconds(state, deviceToken, remainingSeconds, timeZone = "UTC") {
   if (!deviceToken) {
     return;
   }
 
-  const usage = getOrCreateDeviceUsage(state, deviceToken);
+  const usage = getOrCreateDeviceUsage(state, deviceToken, timeZone);
   usage.remainingSeconds = normalizeSeconds(remainingSeconds);
   usage.minutesLeft = Math.ceil(usage.remainingSeconds / 60);
+  usage.trialDayKey = getTrialDayKeyForTimeZone(timeZone);
+  usage.timeZone = timeZone || usage.timeZone || "UTC";
   usage.updatedAt = nowIso();
 }
 
@@ -518,81 +634,30 @@ function syncDeviceUsageToAccountTrial(state, deviceToken, account) {
   setDeviceUsageRemainingSeconds(state, deviceToken, account.trialRemainingSeconds);
 }
 
-function claimOrSyncAccountTrial(state, account, deviceToken) {
-  if (!account) {
-    return {
-      remainingSeconds: null,
-      previousAccountSeconds: null,
-      deviceRemainingSeconds: null,
-      reducedByAccount: false,
-    };
-  }
-
-  const deviceUsage = getOrCreateDeviceUsage(state, deviceToken);
-  const deviceRemainingSeconds = deviceUsage.remainingSeconds;
-  const previousAccountSeconds = hasClaimedAccountTrial(account)
-    ? normalizeSeconds(account.trialRemainingSeconds)
-    : null;
-
-  if (!hasClaimedAccountTrial(account)) {
-    account.trialRemainingSeconds = normalizeSeconds(
-      deviceRemainingSeconds,
-      FREE_TRIAL_SECONDS
-    );
-    account.trialClaimedAt = nowIso();
-    account.updatedAt = nowIso();
-  } else {
-    account.trialRemainingSeconds = Math.min(
-      FREE_TRIAL_SECONDS,
-      normalizeSeconds(account.trialRemainingSeconds),
-      normalizeSeconds(deviceRemainingSeconds, FREE_TRIAL_SECONDS)
-    );
-    account.updatedAt = nowIso();
-  }
-
-  syncDeviceUsageToAccountTrial(state, deviceToken, account);
+function claimOrSyncAccountTrial(state, account, deviceToken, timeZone = "UTC") {
+  const deviceUsage = getOrCreateDeviceUsage(state, deviceToken, timeZone);
   return {
-    remainingSeconds: account.trialRemainingSeconds,
-    previousAccountSeconds,
-    deviceRemainingSeconds,
-    reducedByAccount:
-      Number.isFinite(previousAccountSeconds) &&
-      previousAccountSeconds < deviceRemainingSeconds &&
-      account.trialRemainingSeconds === previousAccountSeconds,
+    remainingSeconds: deviceUsage.remainingSeconds,
+    previousAccountSeconds: null,
+    deviceRemainingSeconds: deviceUsage.remainingSeconds,
+    reducedByAccount: false,
   };
 }
 
-function getFreeTrialRemainingSeconds(state, account, deviceToken) {
-  if (!account) {
-    return getOrCreateDeviceUsage(state, deviceToken).remainingSeconds;
-  }
-
-  return claimOrSyncAccountTrial(state, account, deviceToken).remainingSeconds;
+function getFreeTrialRemainingSeconds(state, account, deviceToken, timeZone = "UTC") {
+  return getOrCreateDeviceUsage(state, deviceToken, timeZone).remainingSeconds;
 }
 
-function deductFreeTrialSeconds(state, account, deviceToken, seconds) {
+function deductFreeTrialSeconds(state, account, deviceToken, seconds, timeZone = "UTC") {
   const normalizedSeconds = normalizeSeconds(seconds);
   if (!normalizedSeconds) {
     return true;
   }
-
-  if (!account) {
-    return deductDeviceSeconds(state, deviceToken, normalizedSeconds);
-  }
-
-  const remainingSeconds = claimOrSyncAccountTrial(state, account, deviceToken).remainingSeconds;
-  if (remainingSeconds < normalizedSeconds) {
-    return false;
-  }
-
-  account.trialRemainingSeconds = remainingSeconds - normalizedSeconds;
-  account.updatedAt = nowIso();
-  syncDeviceUsageToAccountTrial(state, deviceToken, account);
-  return true;
+  return deductDeviceSeconds(state, deviceToken, normalizedSeconds, timeZone);
 }
 
-function deductDeviceSeconds(state, deviceToken, seconds) {
-  const usage = getOrCreateDeviceUsage(state, deviceToken);
+function deductDeviceSeconds(state, deviceToken, seconds, timeZone = "UTC") {
+  const usage = getOrCreateDeviceUsage(state, deviceToken, timeZone);
   if (usage.remainingSeconds < seconds) {
     return false;
   }
@@ -602,8 +667,8 @@ function deductDeviceSeconds(state, deviceToken, seconds) {
   return true;
 }
 
-function addDeviceSeconds(state, deviceToken, seconds) {
-  const usage = getOrCreateDeviceUsage(state, deviceToken);
+function addDeviceSeconds(state, deviceToken, seconds, timeZone = "UTC") {
+  const usage = getOrCreateDeviceUsage(state, deviceToken, timeZone);
   usage.remainingSeconds += seconds;
   usage.minutesLeft = Math.ceil(usage.remainingSeconds / 60);
   usage.updatedAt = nowIso();
@@ -860,6 +925,7 @@ function handleHealth(res) {
 
 async function handleAuthMe(req, res, parsedUrl) {
   const deviceToken = getDeviceToken(req, parsedUrl, null);
+  const timeZone = getClientTimeZone(req, parsedUrl, null);
   if (!deviceToken) {
     sendJson(res, 200, {
       signedIn: false,
@@ -881,9 +947,9 @@ async function handleAuthMe(req, res, parsedUrl) {
   const subscription = await lookupSubscriptionStatusForAccount(state, account);
   const remainingSeconds = subscription.active
     ? getPaidSecondsLeft(state, account, subscription)
-    : getFreeTrialRemainingSeconds(state, account, deviceToken);
+    : getFreeTrialRemainingSeconds(state, account, deviceToken, timeZone);
 
-  if (account) {
+  if (account || deviceToken) {
     writeState(state);
   }
 
@@ -1383,16 +1449,7 @@ async function handleGoogleCallback(_req, res, parsedUrl) {
     delete state.googleStates[oauthState];
     writeState(state);
     const completeUrl = new URL(getPublicUrl("/reg-complete"));
-    completeUrl.searchParams.set(
-      "message",
-      trialSync.reducedByAccount
-        ? `Signed in as ${account.email}. This Google account already used part of the free trial, so your remaining trial time was updated.`
-        : `Signed in as ${account.email}.`
-    );
-    if (trialSync.reducedByAccount) {
-      completeUrl.searchParams.set("trial_notice", "used");
-      completeUrl.searchParams.set("remaining_seconds", String(trialSync.remainingSeconds));
-    }
+    completeUrl.searchParams.set("message", `Signed in as ${account.email}.`);
     if (pending.returnUrl) {
       completeUrl.searchParams.set("return_url", pending.returnUrl);
     }
@@ -1532,6 +1589,7 @@ async function handlePlaybackUsage(req, res, parsedUrl) {
   }
 
   const deviceToken = getDeviceToken(req, parsedUrl, body);
+  const timeZone = getClientTimeZone(req, parsedUrl, body);
   const rawSeconds = Number(body.seconds);
   const usedSeconds = Number.isFinite(rawSeconds) ? Math.max(0, Math.round(rawSeconds)) : 0;
 
@@ -1546,8 +1604,8 @@ async function handlePlaybackUsage(req, res, parsedUrl) {
     const subscription = await lookupSubscriptionStatusForAccount(state, account);
     const remainingSeconds = subscription.active
       ? getPaidSecondsLeft(state, account, subscription)
-      : getFreeTrialRemainingSeconds(state, account, deviceToken);
-    if (account) {
+      : getFreeTrialRemainingSeconds(state, account, deviceToken, timeZone);
+    if (account || deviceToken) {
       writeState(state);
     }
     sendJson(res, 200, {
@@ -1567,7 +1625,7 @@ async function handlePlaybackUsage(req, res, parsedUrl) {
   const subscription = await lookupSubscriptionStatusForAccount(state, account);
   const ok = subscription.active
     ? deductPaidSeconds(state, account, subscription, usedSeconds)
-    : deductFreeTrialSeconds(state, account, deviceToken, usedSeconds);
+    : deductFreeTrialSeconds(state, account, deviceToken, usedSeconds, timeZone);
 
   if (!ok) {
     sendJson(res, 402, {
@@ -1580,7 +1638,7 @@ async function handlePlaybackUsage(req, res, parsedUrl) {
 
   const remainingSeconds = subscription.active
     ? getPaidSecondsLeft(state, account, subscription)
-    : getFreeTrialRemainingSeconds(state, account, deviceToken);
+    : getFreeTrialRemainingSeconds(state, account, deviceToken, timeZone);
 
   sendJson(res, 200, {
     paid: subscription.active,
@@ -1599,6 +1657,7 @@ async function handleSubscriptionStatus(req, res, parsedUrl) {
   }
 
   const deviceToken = getDeviceToken(req, parsedUrl, null);
+  const timeZone = getClientTimeZone(req, parsedUrl, null);
   if (!deviceToken) {
     sendJson(res, 200, {
       active: false,
@@ -1617,8 +1676,8 @@ async function handleSubscriptionStatus(req, res, parsedUrl) {
     const status = await lookupSubscriptionStatusForAccount(state, account);
     const remainingSeconds = status.active
       ? getPaidSecondsLeft(state, account, status)
-      : getFreeTrialRemainingSeconds(state, account, deviceToken);
-    if (account) {
+      : getFreeTrialRemainingSeconds(state, account, deviceToken, timeZone);
+    if (account || deviceToken) {
       writeState(state);
     }
     sendJson(res, 200, {
@@ -1679,6 +1738,29 @@ async function handleStripeWebhook(req, res) {
         "";
       const customerId = typeof session.customer === "string" ? session.customer : "";
       rememberAccountCustomer(state, accountId, customerId);
+      if (!state.purchaseEventsSent?.[session.id]) {
+        const purchaseParams = buildPurchaseAnalyticsParamsFromSession(
+          session,
+          getPlanById,
+          "pdf-text-to-speech-plan",
+          "PDF Text to Speech plan"
+        );
+        await sendGa4Measurement({
+          clientId: session.metadata?.deviceToken || customerId || session.id,
+          userId: accountId || "",
+          sessionId: session.id,
+          eventName: "purchase",
+          params: {
+            product: "pdf_text_to_speech",
+            signed_in: Boolean(accountId),
+            ...purchaseParams,
+          },
+        });
+        console.log(
+          `[analytics] purchase sent to GA4 product=pdf_text_to_speech session_id=${session.id} account_id=${accountId || "none"}`
+        );
+        state.purchaseEventsSent[session.id] = nowIso();
+      }
     }
 
     if (
@@ -1695,6 +1777,12 @@ async function handleStripeWebhook(req, res) {
     writeState(state);
     sendJson(res, 200, { received: true });
   } catch (error) {
+    if (event?.type === "checkout.session.completed") {
+      const sessionId = event?.data?.object?.id || "unknown";
+      console.error(
+        `[analytics] purchase failed to send to GA4 product=pdf_text_to_speech session_id=${sessionId}: ${error.message || error}`
+      );
+    }
     sendJson(res, 500, { error: error.message || "Webhook handler failed." });
   }
 }
@@ -1727,6 +1815,7 @@ async function handleTts(req, res, parsedUrl) {
   }
 
   const deviceToken = getDeviceToken(req, parsedUrl, body);
+  const timeZone = getClientTimeZone(req, parsedUrl, body);
   if (!deviceToken) {
     sendJson(res, 400, { error: "Missing device token." });
     return;
@@ -1737,8 +1826,8 @@ async function handleTts(req, res, parsedUrl) {
   const subscription = await lookupSubscriptionStatusForAccount(state, account);
   const remainingSeconds = subscription.active
     ? getPaidSecondsLeft(state, account, subscription)
-    : getFreeTrialRemainingSeconds(state, account, deviceToken);
-  if (account) {
+    : getFreeTrialRemainingSeconds(state, account, deviceToken, timeZone);
+  if (account || deviceToken) {
     writeState(state);
   }
   if (remainingSeconds <= 0) {

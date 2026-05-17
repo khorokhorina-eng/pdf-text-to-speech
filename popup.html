@@ -26,17 +26,16 @@
           </div>
           <div class="drawer-summary-divider" aria-hidden="true"></div>
           <div class="drawer-summary-block">
-            <p class="drawer-label">Current plan</p>
-            <p id="drawerPlanName" class="drawer-plan-name">Free Trial</p>
-            <p id="drawerPlanMeta" class="drawer-plan-meta">Checking your free trial...</p>
+            <p class="drawer-label">Listening access</p>
+            <p id="drawerPlanName" class="drawer-plan-name">Free Listening</p>
+            <p id="drawerPlanMeta" class="drawer-plan-meta">Checking your listening access...</p>
             <p id="drawerTrialNotice" class="drawer-trial-notice hidden">
-              This Google account already used part of the free trial, so your remaining trial time
-              was updated.
+              Your free listening limit refreshes every day.
             </p>
           </div>
         </div>
         <div class="drawer-actions">
-          <button id="drawerUpgrade" class="drawer-upgrade-btn">Upgrade</button>
+          <button id="drawerUpgrade" class="drawer-upgrade-btn">Unlock Unlimited Listening</button>
           <button id="accountAction" class="drawer-link-btn">Sign in with Google</button>
         </div>
       </aside>
@@ -58,56 +57,82 @@
 
         <section id="readerScreen" class="screen screen-active">
           <div class="hero-card">
-            <h1 class="hero-title">Choose PDF File To Start</h1>
-            <p id="hint" class="hero-copy">Open a PDF and start listening inside the side panel.</p>
+            <p class="eyebrow">PDF Listening Player</p>
+            <h1 id="heroTitle" class="hero-title">Ready to Listen</h1>
+            <p id="hint" class="hero-copy">Open a PDF in Chrome and start playback in the side panel.</p>
           </div>
-
-          <section id="trialEndedNotice" class="trial-banner hidden">
-            <p class="trial-banner-title">Free trial ended</p>
-            <p class="trial-banner-copy">Upgrade to continue listening to PDF files.</p>
-            <button id="trialUpgrade" class="trial-upgrade-btn" type="button">
-              Upgrade to premium
-            </button>
-          </section>
 
           <input id="fileInput" class="hidden-input" type="file" accept=".pdf,application/pdf" />
 
           <button id="openFile" class="primary-action">Open PDF</button>
 
           <section id="readerControls" class="reader-controls hidden">
-            <div class="file-meta">
-              <div class="file-meta-topline">
-                <p class="file-meta-label">Current file</p>
-                <button id="replaceFile" class="replace-file-btn" type="button">Replace PDF</button>
+            <div class="player-card">
+              <div class="file-meta">
+                <div class="file-meta-topline">
+                  <p class="file-meta-label">Current PDF</p>
+                </div>
+                <p id="fileNameLabel" class="file-meta-value">No file selected</p>
               </div>
-              <p id="fileNameLabel" class="file-meta-value">No file selected</p>
+
+              <div class="player-top-row">
+                <button id="play" class="primary-action">Start Listening</button>
+                <label class="speed-field speed-field-inline">
+                  <span class="file-meta-label">Speed</span>
+                  <select id="speed" aria-label="Playback speed">
+                    <option value="0.75">0.75x</option>
+                    <option value="1" selected>1x</option>
+                    <option value="1.25">1.25x</option>
+                    <option value="1.5">1.5x</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="page-jump-row">
+                <label class="page-jump-field">
+                  <span class="file-meta-label">Page</span>
+                  <input id="startPage" type="number" min="1" step="1" inputmode="numeric" placeholder="12" />
+                </label>
+                <button id="startFromPage" class="secondary-action page-jump-btn" type="button">Play from page</button>
+              </div>
+
+              <button id="replaceFile" class="secondary-action replace-file-btn replace-file-btn-large" type="button">Open another PDF</button>
             </div>
-
-            <button id="play" class="primary-action">Read Aloud</button>
-
-            <div class="secondary-grid">
-              <button id="pause" class="secondary-action" disabled>Pause</button>
-              <button id="stop" class="secondary-action" disabled>Stop</button>
-            </div>
-
-            <label class="speed-field">
-              <span class="speed-field-label">Speed</span>
-              <select id="speed" aria-label="Playback speed">
-                <option value="0.75">0.75x</option>
-                <option value="1" selected>1x</option>
-                <option value="1.25">1.25x</option>
-                <option value="1.5">1.5x</option>
-              </select>
-            </label>
           </section>
 
-          <button id="limitUpgrade" class="upgrade-cta hidden">Upgrade to continue listening</button>
+          <section id="resumeSection" class="reader-controls hidden">
+            <div class="file-meta compact-card">
+              <div class="file-meta-topline">
+                <p class="file-meta-label">Resume listening</p>
+              </div>
+              <div class="compact-row">
+                <p id="resumeMeta" class="file-meta-value compact-value">Pick up where you left off.</p>
+                <button id="resumePlayback" class="library-action library-action-strong" type="button">Resume</button>
+              </div>
+            </div>
+          </section>
+
+          <section id="bookmarksSection" class="reader-controls hidden">
+            <div class="file-meta compact-card">
+              <div class="file-meta-topline library-section-head">
+                <p class="file-meta-label">Saved sections</p>
+                <div class="library-head-actions">
+                  <button id="addBookmark" class="replace-file-btn" type="button">Save section</button>
+                  <button id="toggleBookmarks" class="replace-file-btn" type="button">View</button>
+                </div>
+              </div>
+              <div id="bookmarkContent" class="library-section-content hidden">
+                <div id="bookmarkList" class="library-list"></div>
+              </div>
+            </div>
+          </section>
         </section>
 
         <section id="paywallScreen" class="screen hidden">
           <div class="paywall-top">
             <div>
               <h2 class="paywall-title">Unlock premium listening</h2>
+              <p class="micro-copy">Keep your PDF player open for longer sessions and smoother daily listening.</p>
             </div>
           </div>
 
@@ -117,7 +142,7 @@
             <div id="authCopy" class="auth-copy">
               <p class="auth-title">Continue with Google</p>
               <p id="authMessage" class="auth-message">
-                Sign in before checkout to attach your paid plan to this account.
+                Sign in before checkout to attach unlimited listening to this account.
               </p>
             </div>
             <button id="authGoogle" class="auth-google">Continue with Google</button>
@@ -132,12 +157,12 @@
             <p class="paywall-billing-note">Billed monthly $9.99 / month</p>
 
             <ul class="feature-list">
-              <li>Listen to longer PDFs without trial limits</li>
-              <li>Natural AI voices for smoother playback</li>
-              <li>Faster listening workflow inside Chrome</li>
+              <li>Unlimited listening for your PDF sessions</li>
+              <li>Natural voices for smoother playback</li>
+              <li>A cleaner daily reading flow in Chrome</li>
             </ul>
 
-            <button id="continueCheckoutMonthly" class="subscribe-btn">Subscribe monthly</button>
+            <button id="continueCheckoutMonthly" class="subscribe-btn">Unlock monthly</button>
           </section>
 
           <section class="paywall-card paywall-card-featured">
@@ -150,12 +175,12 @@
             <p class="paywall-billing-note">Billed annually $89.99 / year</p>
 
             <ul class="feature-list">
-              <li>Best price for everyday PDF listening</li>
-              <li>Natural AI voices for smoother playback</li>
-              <li>Faster listening workflow inside Chrome</li>
+              <li>Unlimited listening for long reading habits</li>
+              <li>Natural voices for smoother playback</li>
+              <li>Best value for everyday PDF listening</li>
             </ul>
 
-            <button id="continueCheckoutAnnual" class="subscribe-btn">Subscribe yearly</button>
+            <button id="continueCheckoutAnnual" class="subscribe-btn">Unlock yearly</button>
           </section>
         </section>
       </main>

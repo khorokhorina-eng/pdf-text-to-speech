@@ -9,7 +9,7 @@ const BILLING_ENDPOINTS = [
   REMOTE_API_BASE_URL,
 ];
 
-const DEFAULT_FREE_TRIAL_SECONDS = 120;
+const DEFAULT_FREE_TRIAL_SECONDS = 300;
 const DEFAULT_MIN_FREE_PLAYBACK_START_SECONDS = 0;
 const DEVICE_TOKEN_KEY = "deviceToken";
 const AUTH_SESSION_KEY = "authSession";
@@ -28,6 +28,21 @@ let subscriptionCache = {
   signedInTrial: false,
   timestamp: 0,
 };
+
+function getTrialDayKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getBrowserTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch (_error) {
+    return "UTC";
+  }
+}
 
 function enableActionSidePanel() {
   if (chrome.sidePanel?.setPanelBehavior) {
@@ -72,6 +87,18 @@ async function readUsageSeconds() {
   if (!trialState) {
     return null;
   }
+  const currentTrialDayKey = getTrialDayKey();
+  if (trialState.trialDayKey !== currentTrialDayKey) {
+    await writeStorage({
+      [TRIAL_STATE_KEY]: {
+        deviceToken: trialState.deviceToken || (await getOrCreateDeviceToken()),
+        remainingSeconds: DEFAULT_FREE_TRIAL_SECONDS,
+        trialDayKey: currentTrialDayKey,
+        updatedAt: Date.now(),
+      },
+    });
+    return DEFAULT_FREE_TRIAL_SECONDS;
+  }
   if (!Number.isFinite(Number(trialState.remainingSeconds))) {
     return null;
   }
@@ -99,6 +126,7 @@ async function writeUsageSeconds(value, options = {}) {
     [TRIAL_STATE_KEY]: {
       deviceToken,
       remainingSeconds: nextSeconds,
+      trialDayKey: getTrialDayKey(),
       updatedAt: Date.now(),
     },
   });
@@ -140,7 +168,10 @@ async function getAuthState() {
   const cachedSession = cached?.[AUTH_SESSION_KEY];
 
   try {
-    const data = await fetchJsonFromEndpoints(`/auth/me?device_token=${encodeURIComponent(deviceToken)}`);
+    const timeZone = getBrowserTimeZone();
+    const data = await fetchJsonFromEndpoints(
+      `/auth/me?device_token=${encodeURIComponent(deviceToken)}&time_zone=${encodeURIComponent(timeZone)}`
+    );
     const session = {
       email: typeof data?.email === "string" ? data.email.trim() : "",
       method: data?.method || null,
@@ -384,7 +415,10 @@ async function addPlaybackUsage(rawSeconds) {
   const data = await fetchJsonFromEndpoints("/usage", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ seconds }),
+    body: JSON.stringify({
+      seconds,
+      time_zone: getBrowserTimeZone(),
+    }),
   });
 
   subscriptionCache = {
