@@ -45,7 +45,7 @@ const OPENAI_TTS_MODEL = process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts";
 const OPENAI_TTS_VOICE = process.env.OPENAI_TTS_VOICE || "alloy";
 const FREE_TRIAL_SECONDS = Math.max(
   1,
-  Number(process.env.FREE_TRIAL_SECONDS || 300)
+  Number(process.env.FREE_TRIAL_SECONDS || 180)
 );
 const MIN_FREE_PLAYBACK_START_SECONDS = Math.max(
   0,

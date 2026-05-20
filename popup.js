@@ -21,6 +21,8 @@ const openFileBtn = document.getElementById("openFile");
 const replaceFileBtn = document.getElementById("replaceFile");
 const fileInput = document.getElementById("fileInput");
 const paywallStatusEl = document.getElementById("paywallStatus");
+const paywallTrialAlertEl = document.getElementById("paywallTrialAlert");
+const paywallIntroEl = document.getElementById("paywallIntro");
 const continueCheckoutMonthlyBtn = document.getElementById("continueCheckoutMonthly");
 const continueCheckoutAnnualBtn = document.getElementById("continueCheckoutAnnual");
 const accountActionBtn = document.getElementById("accountAction");
@@ -109,8 +111,15 @@ let pageStartChunkMap = [];
 let pendingStartPage = null;
 const pendingAudioRequests = new Map();
 
+function getLocalTrialDayKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 const INITIAL_PREPARED_PAGES = 1;
-const FIRST_CHUNK_MAX_LENGTH = 80;
+const FIRST_CHUNK_MAX_LENGTH = 32;
 const DEFAULT_CHUNK_MAX_LENGTH = 1100;
 
 const PLAN_META = {
@@ -398,7 +407,7 @@ function getPlanPresentation() {
       getLiveRemainingSeconds() > 0
         ? `${formatRemainingSeconds(getLiveRemainingSeconds())} of free listening left today.`
         : hasKnownTrialRemaining()
-        ? "Free listening resets tomorrow."
+        ? "Today's free listening is over. Come back tomorrow for a new limit, or unlock unlimited listening now."
         : "Checking today's listening access...",
   };
 }
@@ -412,11 +421,12 @@ function updateUI() {
   const isLoading = state.status === "loading";
   const trialExhausted =
     !currentSubscription?.active && hasKnownTrialRemaining() && getLiveRemainingSeconds() <= 0;
+  hintEl.classList.toggle("hero-copy-alert", trialExhausted);
   readerControlsEl.classList.toggle("hidden", !currentFileBuffer);
   openFileBtn.classList.toggle("hidden", Boolean(currentFileBuffer));
   playBtn.disabled = !currentFileBuffer || isLoading;
   if (isLoading) {
-    playBtn.textContent = "Preparing audio...";
+    playBtn.textContent = "Preparing...";
   } else if (state.status === "reading") {
     playBtn.textContent = "Pause";
   } else if (state.status === "paused") {
@@ -468,6 +478,7 @@ function updateUI() {
   drawerPlanNameEl.textContent = planPresentation.name;
   drawerPlanMetaEl.textContent = planPresentation.meta;
   drawerTrialNoticeEl?.classList.toggle("hidden", !trialAdjustedAfterSignIn);
+  updatePaywallTrialAlert();
   drawerEmailEl.textContent = authState.signedIn ? authState.email : "Guest mode";
   accountActionBtn.textContent = authState.signedIn ? "Sign out" : "Sign in with Google";
   drawerUpgradeBtn.classList.toggle("hidden", currentSubscription?.active);
@@ -479,8 +490,13 @@ function updateUI() {
 }
 
 function getHeroTitle() {
+  const trialExhausted =
+    !currentSubscription?.active && hasKnownTrialRemaining() && getLiveRemainingSeconds() <= 0;
   if (!currentFileBuffer) {
     return "Ready to Listen";
+  }
+  if (trialExhausted) {
+    return "Trial ended";
   }
   if (state.status === "reading") {
     return "Listening";
@@ -580,6 +596,14 @@ function startPlaybackUiTimer() {
       return;
     }
     captureActivePlaybackDelta();
+    if (
+      Number.isFinite(sessionRemainingSeconds) &&
+      sessionRemainingSeconds > 0 &&
+      sessionRemainingSeconds <= 3 &&
+      pendingUsageSeconds > 0
+    ) {
+      commitPlaybackUsageInBackground(playbackToken);
+    }
     if (Number.isFinite(sessionRemainingSeconds) && sessionRemainingSeconds <= 0) {
       stopPlaybackUiTimer();
       const tokenAtStart = playbackToken;
@@ -1152,6 +1176,11 @@ function getLatestResumeEntry() {
   return null;
 }
 
+function getLatestRecentEntry() {
+  const recentItems = Array.isArray(libraryState.recent) ? libraryState.recent : [];
+  return recentItems.length ? recentItems[0] : null;
+}
+
 function getCurrentBookmarks() {
   if (!currentPdfId) {
     return [];
@@ -1233,10 +1262,12 @@ function syncLibrarySectionToggles() {
 function updateLibraryUI() {
   const currentResume = getCurrentResume();
   const latestResume = getLatestResumeEntry();
+  const latestRecent = getLatestRecentEntry();
   const bookmarks = getCurrentBookmarks();
 
   const showResume =
     Boolean(latestResume) ||
+    Boolean(!currentPdfId && latestRecent) ||
     (Boolean(currentPdfId) &&
       Boolean(currentResume) &&
       Number.isFinite(currentResume.chunkIndex) &&
@@ -1244,13 +1275,24 @@ function updateLibraryUI() {
       (!Number.isFinite(currentResume.totalChunks) || currentResume.chunkIndex < currentResume.totalChunks));
   resumeSectionEl.classList.toggle("hidden", !showResume);
   if (showResume) {
-    const sourceResume = currentResume && currentPdfId ? { id: currentPdfId, name: state.fileName, resume: currentResume } : latestResume;
-    resumePlaybackBtn.dataset.resumeId = sourceResume?.id || "";
-    resumeMetaEl.textContent = `${sourceResume?.name || "Last PDF"} · ${formatSectionLabel(
-      sourceResume?.resume?.chunkIndex || 0
-    )}`;
+    const sourceResume =
+      currentResume && currentPdfId
+        ? { id: currentPdfId, name: state.fileName, resume: currentResume }
+        : latestResume;
+    const sourceRecent = !sourceResume && !currentPdfId ? latestRecent : null;
+    resumePlaybackBtn.dataset.resumeId = sourceResume?.id || sourceRecent?.id || "";
+    if (sourceResume?.resume) {
+      resumeMetaEl.textContent = `${sourceResume.name || "Last PDF"} · ${formatSectionLabel(
+        sourceResume.resume.chunkIndex || 0
+      )}`;
+      resumePlaybackBtn.textContent = "Resume";
+    } else {
+      resumeMetaEl.textContent = sourceRecent?.name || "Open your last PDF again.";
+      resumePlaybackBtn.textContent = "Open PDF";
+    }
   } else {
     resumePlaybackBtn.dataset.resumeId = "";
+    resumePlaybackBtn.textContent = "Resume";
   }
 
   const showBookmarks = Boolean(currentPdfId);
@@ -1449,6 +1491,7 @@ async function persistLocalTrialFloor(remainingSeconds) {
     [TRIAL_STATE_KEY]: {
       deviceToken,
       remainingSeconds: safeSeconds,
+      trialDayKey: getLocalTrialDayKey(),
       updatedAt: Date.now(),
     },
   });
@@ -1463,6 +1506,19 @@ function setPaywallStatus(text, ok = false) {
   paywallStatusEl.style.color = ok ? "#24553a" : "#6f665c";
 }
 
+function updatePaywallTrialAlert() {
+  if (!paywallTrialAlertEl) {
+    return;
+  }
+  const showTrialAlert =
+    !currentSubscription?.active &&
+    hasKnownTrialRemaining() &&
+    getLiveRemainingSeconds() <= 0;
+  paywallTrialAlertEl.classList.toggle("hidden", !showTrialAlert);
+  paywallStatusEl?.classList.toggle("hidden", showTrialAlert);
+  paywallIntroEl?.classList.toggle("hidden", showTrialAlert);
+}
+
 function updateAuthUI() {
   authPanelEl?.classList.toggle("hidden", authState.signedIn);
   authCopyEl.classList.toggle("hidden", authState.signedIn);
@@ -1471,7 +1527,8 @@ function updateAuthUI() {
     ? ""
     : !currentSubscription?.active && getLiveRemainingSeconds() <= 0
     ? "Today's free listening is over. Your free limit will reset tomorrow, or you can unlock unlimited listening now."
-    : "You can listen for 5 free minutes each day. Sign in with Google when you want unlimited listening.";
+    : "You can listen for 3 free minutes each day. Sign in with Google when you want unlimited listening.";
+  updatePaywallTrialAlert();
   updateUI();
 }
 
@@ -1634,7 +1691,7 @@ async function loadSubscriptionStatus() {
     } else {
       setPaywallStatus(
         authState.signedIn
-          ? "No active subscription detected."
+          ? "Choose a plan to continue."
           : "Sign in before checkout to keep unlimited listening attached to your account."
       );
     }
@@ -2124,9 +2181,11 @@ async function prepareSelectedFile(file) {
         return;
       }
       firstChunkReady = true;
+      warmPreparedChunk(0, playbackToken);
       if (pendingStartPlayback) {
         pendingStartPlayback = false;
         playbackToken += 1;
+        warmPreparedChunk(0, playbackToken);
         void speakCurrentChunk(playbackToken);
       } else {
         warmPreparedChunk(0, playbackToken);
@@ -2199,7 +2258,7 @@ async function openRecentPdf(id) {
   setStatus("loading", "Loading your PDF...");
 
   try {
-    await openPdfBlobInBrowserTab(record.buffer);
+    void openPdfBlobInBrowserTab(record.buffer).catch(() => null);
     isPreparingText = true;
     preparationComplete = false;
     currentFileBuffer = record.buffer;
@@ -2415,7 +2474,13 @@ async function startPlayback() {
       : -1,
   });
   playbackToken += 1;
-  clearPrefetch();
+  const hasWarmCurrentChunk =
+    prefetchedChunk &&
+    prefetchedChunk.index === currentChunkIndex &&
+    prefetchedChunk.speed === state.speed;
+  if (!hasWarmCurrentChunk) {
+    clearPrefetch();
+  }
   warmPreparedChunk(currentChunkIndex, playbackToken);
   await speakCurrentChunk(playbackToken);
 }
@@ -2492,14 +2557,14 @@ fileInput.addEventListener("change", async (event) => {
 
 resumePlaybackBtn?.addEventListener("click", () => {
   const resumeId = resumePlaybackBtn.dataset.resumeId || "";
+  if (resumeId && resumeId !== currentPdfId) {
+    void openRecentPdf(resumeId);
+    return;
+  }
   const resume =
     (resumeId && libraryState.resumes?.[resumeId]) ||
     getCurrentResume();
   if (!resume || !Number.isFinite(resume.chunkIndex) || resume.chunkIndex <= 0) {
-    return;
-  }
-  if (resumeId && resumeId !== currentPdfId) {
-    void openRecentPdf(resumeId);
     return;
   }
   currentChunkIndex = Math.max(0, Number(resume.chunkIndex) || 0);
@@ -2662,4 +2727,14 @@ void loadLibraryState()
 window.addEventListener("beforeunload", () => {
   commitPlaybackUsage().catch(() => null);
   cleanupCurrentAudio();
+});
+
+window.addEventListener("pagehide", () => {
+  commitPlaybackUsage().catch(() => null);
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    commitPlaybackUsage().catch(() => null);
+  }
 });
