@@ -119,7 +119,7 @@ function getLocalTrialDayKey(date = new Date()) {
 }
 
 const INITIAL_PREPARED_PAGES = 1;
-const FIRST_CHUNK_MAX_LENGTH = 32;
+const FIRST_CHUNK_MAX_LENGTH = 24;
 const DEFAULT_CHUNK_MAX_LENGTH = 1100;
 
 const PLAN_META = {
@@ -478,6 +478,7 @@ function updateUI() {
   drawerPlanNameEl.textContent = planPresentation.name;
   drawerPlanMetaEl.textContent = planPresentation.meta;
   drawerTrialNoticeEl?.classList.toggle("hidden", !trialAdjustedAfterSignIn);
+  updatePaywallCopy();
   updatePaywallTrialAlert();
   drawerEmailEl.textContent = authState.signedIn ? authState.email : "Guest mode";
   accountActionBtn.textContent = authState.signedIn ? "Sign out" : "Sign in with Google";
@@ -1519,15 +1520,30 @@ function updatePaywallTrialAlert() {
   paywallIntroEl?.classList.toggle("hidden", showTrialAlert);
 }
 
+function updatePaywallCopy() {
+  const hasCurrentPdf = Boolean(state.fileName);
+  const currentPdfLabel = state.fileName || "this PDF";
+  if (paywallIntroEl) {
+    paywallIntroEl.textContent = hasCurrentPdf
+      ? `Unlock no daily limits for ${currentPdfLabel} and every document after it.`
+      : "Unlock no daily limits for this PDF and every document after it.";
+  }
+  if (authMessageEl) {
+    authMessageEl.textContent = authState.signedIn
+      ? ""
+      : !currentSubscription?.active && getLiveRemainingSeconds() <= 0
+      ? `Come back tomorrow for a new limit, or sign in to continue ${currentPdfLabel} today.`
+      : hasCurrentPdf
+      ? `Sign in before checkout to continue ${currentPdfLabel} without daily limits.`
+      : "Sign in before checkout to continue listening without daily limits.";
+  }
+}
+
 function updateAuthUI() {
   authPanelEl?.classList.toggle("hidden", authState.signedIn);
   authCopyEl.classList.toggle("hidden", authState.signedIn);
   authGoogleBtn.classList.toggle("hidden", authState.signedIn);
-  authMessageEl.textContent = authState.signedIn
-    ? ""
-    : !currentSubscription?.active && getLiveRemainingSeconds() <= 0
-    ? "Today's free listening is over. Your free limit will reset tomorrow, or you can unlock unlimited listening now."
-    : "You can listen for 3 free minutes each day. Sign in with Google when you want unlimited listening.";
+  updatePaywallCopy();
   updatePaywallTrialAlert();
   updateUI();
 }
@@ -1566,6 +1582,7 @@ async function loadAuthState() {
           setPaywallStatus(
             "Your free listening limit refreshes every day."
           );
+          updatePaywallCopy();
           updateUI();
         }
       });
@@ -1578,6 +1595,7 @@ async function loadAuthState() {
           !currentSubscription?.active
         ) {
           trialAdjustedAfterSignIn = true;
+          updatePaywallCopy();
           updateUI();
         }
         openDrawer();
@@ -1619,7 +1637,7 @@ async function refreshQuotaSnapshot() {
     }
     if (Number.isFinite(Number(quota.remainingSeconds))) {
       lastKnownRemainingSeconds = Math.max(0, Number(quota.remainingSeconds));
-      sessionRemainingSeconds = null;
+      sessionRemainingSeconds = lastKnownRemainingSeconds;
       updateUI();
     }
   } catch (_error) {
@@ -1695,6 +1713,7 @@ async function loadSubscriptionStatus() {
           : "Sign in before checkout to keep unlimited listening attached to your account."
       );
     }
+    updatePaywallCopy();
     updateUI();
   } catch (error) {
     setPaywallStatus(error.message || "Failed to load subscription status.");
@@ -1716,7 +1735,7 @@ function openPaywall(source = "unknown") {
     has_pdf: Boolean(currentFileBuffer),
   });
   if (!currentSubscription?.active && getLiveRemainingSeconds() <= 0) {
-    setPaywallStatus("Today's free listening is over. Your free limit will reset tomorrow, or you can unlock unlimited listening now.");
+    setPaywallStatus("Today's free listening is over. Come back tomorrow for a new limit, or continue listening today.");
   }
   void loadAuthState().then(() => {
     loadSubscriptionStatus();
@@ -1955,6 +1974,7 @@ function appendPreparedPage(pageText, pageNumber) {
 async function extractPageText(pdf, pageNumber) {
   const page = await pdf.getPage(pageNumber);
   const textContent = await page.getTextContent();
+  const viewport = page.getViewport({ scale: 1 });
   const positionedItems = textContent.items
     .map((item) => {
       const text = normalizeText(item?.str || "");
@@ -1988,29 +2008,56 @@ async function extractPageText(pdf, pageNumber) {
       return;
     }
     if (currentRow.length) {
-      rows.push(
-        currentRow
-          .slice()
-          .sort((a, b) => a.x - b.x)
-          .map((entry) => entry.text)
-          .join(" ")
-      );
+      rows.push(currentRow.slice());
     }
     currentRow = [item];
     currentY = item.y;
   });
 
   if (currentRow.length) {
-    rows.push(
-      currentRow
-        .slice()
-        .sort((a, b) => a.x - b.x)
-        .map((entry) => entry.text)
-        .join(" ")
-    );
+    rows.push(currentRow.slice());
   }
 
-  return cleanPdfLines(rows).join(" ");
+  const normalizedRows = rows
+    .map((row) => {
+      const sortedRow = row.slice().sort((a, b) => a.x - b.x);
+      return {
+        minX: sortedRow[0]?.x || 0,
+        maxX: sortedRow[sortedRow.length - 1]?.x || 0,
+        text: sortedRow.map((entry) => entry.text).join(" "),
+      };
+    })
+    .filter((row) => normalizeText(row.text));
+
+  const pageWidth = Number.isFinite(Number(viewport?.width)) ? Number(viewport.width) : 0;
+  const leftRows = [];
+  const rightRows = [];
+  const splitThreshold = pageWidth > 0 ? pageWidth * 0.22 : 120;
+  const gutterThreshold = pageWidth > 0 ? pageWidth * 0.12 : 60;
+  const rowStarts = normalizedRows.map((row) => row.minX);
+  const minStart = rowStarts.length ? Math.min(...rowStarts) : 0;
+  const maxStart = rowStarts.length ? Math.max(...rowStarts) : 0;
+
+  if (maxStart - minStart > splitThreshold) {
+    const splitX = (minStart + maxStart) / 2;
+    normalizedRows.forEach((row) => {
+      const rowMidpoint = (row.minX + row.maxX) / 2;
+      if (rowMidpoint < splitX - gutterThreshold / 2) {
+        leftRows.push(row.text);
+      } else if (rowMidpoint > splitX + gutterThreshold / 2) {
+        rightRows.push(row.text);
+      } else {
+        leftRows.push(row.text);
+      }
+    });
+  }
+
+  const orderedRows =
+    leftRows.length >= 3 && rightRows.length >= 3
+      ? [...leftRows, ...rightRows]
+      : normalizedRows.map((row) => row.text);
+
+  return cleanPdfLines(orderedRows).join(" ");
 }
 
 async function preparePdfPages(pdf, startPage, endPage, runId, onChunkReady) {
@@ -2142,6 +2189,7 @@ async function prepareSelectedFile(file) {
       lastModified: file.lastModified,
     });
     currentPdfId = pdfId;
+    void refreshQuotaSnapshot();
     const saveDocumentPromise = savePdfDocument({
       id: pdfId,
       name: file.name || "PDF document",
@@ -2256,6 +2304,7 @@ async function openRecentPdf(id) {
   currentPdfId = id;
   state.fileName = record.name || "PDF document";
   setStatus("loading", "Loading your PDF...");
+  void refreshQuotaSnapshot();
 
   try {
     void openPdfBlobInBrowserTab(record.buffer).catch(() => null);

@@ -50,32 +50,44 @@ Read PDF files aloud in Chrome with natural AI voice playback.
 
 ### Detailed Description
 
-PDF Text to Speech reads PDF documents aloud directly in Chrome.
+Listen to PDF files directly in Chrome with clear audio playback.
 
-Use it to:
+PDF Text to Speech helps users turn written PDF content into spoken audio so documents are easier to review during work, study, and everyday reading.
 
-- listen to PDF files in the browser
-- upload a PDF and start playback quickly
-- control playback speed
-- continue with paid listening after the free trial
+What the extension does:
+
+- opens PDF files in Chrome and prepares them for listening
+- reads PDF text aloud with adjustable playback speed
+- lets users pause, resume, and continue listening
+- supports saved sections and returning to recent documents
+
+Common use cases:
+
+- reviewing long documents without constant screen reading
+- listening to study materials, reports, manuals, and forms
+- reducing eye strain during long reading sessions
+- following written content while multitasking
 
 How it works:
 
-- The extension extracts text from the PDF you open or upload.
-- That text is sent to pdftext2speech.com for speech generation.
-- Audio is generated using OpenAI voice models.
+1. Open a PDF in Chrome.
+2. Start listening from the extension.
+3. Adjust speed or jump to a page when needed.
+4. Continue listening from saved sections later.
 
-Free and paid usage:
+Service and billing:
 
-- Includes 5 free minutes of listening.
-- After the free limit is used, playback requires a paid plan.
+- The extension includes a limited daily listening allowance.
+- Continued listening after the daily limit requires a paid plan.
 - Payments and subscriptions are handled through Stripe.
 
 Privacy summary:
 
-- PDF text is processed only to generate audio playback.
-- A device token is used to track free usage and subscription state.
-- Payment processing is handled by Stripe.
+- PDF text is processed to generate audio playback.
+- Usage state is stored to manage listening limits and subscription access.
+- Checkout and billing are handled through Stripe.
+
+PDF Text to Speech is designed for users who want a simple way to listen to PDF content in Chrome.
 
 ### Suggested Privacy Disclosure
 
