@@ -36,6 +36,7 @@
         </div>
         <div class="drawer-actions">
           <button id="drawerUpgrade" class="drawer-upgrade-btn">Unlock Unlimited Listening</button>
+          <button id="drawerManageSubscription" class="drawer-link-btn hidden">Cancel subscription</button>
           <button id="accountAction" class="drawer-link-btn">Sign in with Google</button>
         </div>
       </aside>
@@ -154,7 +155,18 @@
             <button id="authGoogle" class="auth-google">Continue with Google</button>
           </section>
 
-          <section class="paywall-card">
+          <section id="activeSubscriptionPanel" class="paywall-card hidden">
+            <h3 class="paywall-plan-title">Manage subscription</h3>
+            <p id="activeSubscriptionCopy" class="micro-copy">
+              Your subscription is active on this account.
+            </p>
+            <div class="manage-subscription-actions">
+              <button id="changePlanBtn" class="secondary-action" type="button">Change plan</button>
+              <button id="cancelSubscriptionBtn" class="drawer-link-btn" type="button">Cancel subscription</button>
+            </div>
+          </section>
+
+          <section id="monthlyPlanCard" class="paywall-card">
             <h3 class="paywall-plan-title">Monthly</h3>
             <div class="paywall-price-row">
               <span class="paywall-price">$0.33</span>
@@ -171,7 +183,7 @@
             <button id="continueCheckoutMonthly" class="subscribe-btn">Unlock monthly</button>
           </section>
 
-          <section class="paywall-card paywall-card-featured">
+          <section id="annualPlanCard" class="paywall-card paywall-card-featured">
             <p class="paywall-plan-badge">Best Value</p>
             <h3 class="paywall-plan-title">Yearly</h3>
             <div class="paywall-price-row">

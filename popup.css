@@ -894,6 +894,13 @@ body.drawer-open .profile-drawer {
   font-size: 12px;
 }
 
+.manage-subscription-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
 #paywallScreen {
   gap: 8px;
 }

@@ -262,6 +262,7 @@ function createEmptyState() {
     sessionToAccount: {},
     sessionToReturnUrl: {},
     purchaseEventsSent: {},
+    subscriptionOverridesByEmail: {},
     googleStates: {},
   };
 }
@@ -331,6 +332,53 @@ function readState() {
 function writeState(state) {
   cleanupState(state);
   fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+}
+
+function getSubscriptionOverrideForAccount(state, account) {
+  const normalizedEmail = String(account?.email || "").trim().toLowerCase();
+  if (!normalizedEmail) {
+    return null;
+  }
+
+  const override = state.subscriptionOverridesByEmail?.[normalizedEmail];
+  if (!override || override.active !== true) {
+    return null;
+  }
+
+  const planId = String(override.planId || "monthly");
+  const periodEndIso = override.currentPeriodEnd || null;
+  const periodEndMs = periodEndIso ? Date.parse(periodEndIso) : NaN;
+  if (Number.isFinite(periodEndMs) && periodEndMs <= Date.now()) {
+    delete state.subscriptionOverridesByEmail[normalizedEmail];
+    return null;
+  }
+
+  const plan = PLAN_DEFINITIONS.find((entry) => entry.id === planId) || PLAN_DEFINITIONS[0] || null;
+  const interval = planId === "annual" ? "year" : "month";
+  const currentPeriodStart =
+    override.currentPeriodStart ||
+    new Date(Date.now() - 1000 * 60 * 60).toISOString();
+  const currentPeriodEnd =
+    periodEndIso ||
+    new Date(
+      Date.now() + (interval === "year" ? 1000 * 60 * 60 * 24 * 365 : 1000 * 60 * 60 * 24 * 31)
+    ).toISOString();
+
+  return {
+    active: true,
+    status: "active",
+    customerId: state.accountToCustomer[account.id] || null,
+    email: normalizedEmail,
+    signedIn: true,
+    plan: {
+      planId: plan?.id || planId,
+      subscriptionId: String(override.subscriptionId || `override_${planId}_${normalizedEmail}`),
+      priceId: String(override.priceId || ""),
+      interval,
+      currentPeriodStart,
+      currentPeriodEnd,
+    },
+  };
 }
 
 function setCorsHeaders(res) {
@@ -851,6 +899,11 @@ async function lookupSubscriptionStatusForAccount(state, account) {
     };
   }
 
+  const override = getSubscriptionOverrideForAccount(state, account);
+  if (override) {
+    return override;
+  }
+
   const customerId = state.accountToCustomer[account.id];
   if (!customerId) {
     return {
@@ -900,8 +953,18 @@ async function lookupSubscriptionStatusForAccount(state, account) {
       interval: item?.price?.recurring?.interval || null,
       currentPeriodStart: activeSub.current_period_start || null,
       currentPeriodEnd: activeSub.current_period_end || null,
+      cancelAtPeriodEnd: Boolean(activeSub.cancel_at_period_end),
+      cancelAt: activeSub.cancel_at || null,
     },
   };
+}
+
+async function resolveSubscriptionStatusForAccount(state, account) {
+  const override = getSubscriptionOverrideForAccount(state, account);
+  if (override) {
+    return override;
+  }
+  return lookupSubscriptionStatusForAccount(state, account);
 }
 
 async function fetchGoogleUserInfo(accessToken) {
@@ -944,7 +1007,7 @@ async function handleAuthMe(req, res, parsedUrl) {
 
   const state = readState();
   const account = getAccountForDevice(state, deviceToken);
-  const subscription = await lookupSubscriptionStatusForAccount(state, account);
+  const subscription = await resolveSubscriptionStatusForAccount(state, account);
   const remainingSeconds = subscription.active
     ? getPaidSecondsLeft(state, account, subscription)
     : getFreeTrialRemainingSeconds(state, account, deviceToken, timeZone);
@@ -960,7 +1023,8 @@ async function handleAuthMe(req, res, parsedUrl) {
     signedInAt: account?.updatedAt || null,
     paid: subscription.active,
     subscriptionStatus: subscription.status || "none",
-    plan: subscription.plan?.planId || null,
+    plan: subscription.plan || null,
+    planId: subscription.plan?.planId || null,
     minutesLeft: displayMinutesFromSeconds(remainingSeconds),
     remainingSeconds,
     freeTrialSeconds: FREE_TRIAL_SECONDS,
@@ -1123,6 +1187,105 @@ function renderAuthCompletePage(title, message, returnUrl = "", analyticsEvent =
         window.location.replace(${JSON.stringify(safeReturn)});
       }, 1400);
     </script>` : ""}
+  </body>
+</html>`;
+}
+
+function formatPeriodEndLabel(value) {
+  if (!value) {
+    return "";
+  }
+
+  const raw = Number(value);
+  const date =
+    Number.isFinite(raw) && raw > 0
+      ? new Date(raw * 1000)
+      : new Date(String(value));
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(date);
+}
+
+function renderPortalReturnPage({ title, message, ctaLabel = "Back to Gmail", returnUrl = "" }) {
+  const safeReturn = sanitizeExtensionReturnUrl(returnUrl) || "https://mail.google.com";
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>${title}</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Manrope, "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        min-height: 100vh;
+        padding: 28px 18px;
+        background:
+          radial-gradient(circle at top, rgba(247, 200, 182, 0.26), transparent 30%),
+          radial-gradient(circle at top left, rgba(239, 115, 80, 0.12), transparent 28%),
+          linear-gradient(180deg, #fffaf6 0%, #fbf5f1 100%);
+        color: #1f1b17;
+      }
+      .card {
+        max-width: 760px;
+        margin: 0 auto;
+        background: rgba(255, 255, 255, 0.94);
+        border: 1px solid #eadbd2;
+        border-radius: 28px;
+        padding: 28px;
+        box-shadow: 0 18px 42px rgba(27, 27, 27, 0.06);
+      }
+      .eyebrow {
+        margin: 0 0 10px;
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: #ef7350;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: clamp(32px, 6vw, 52px);
+        line-height: 1;
+        letter-spacing: -0.025em;
+        font-weight: 620;
+        color: #2b2724;
+      }
+      p {
+        margin: 0 0 20px;
+        font-size: 18px;
+        line-height: 1.45;
+        color: #3d362f;
+      }
+      .cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 54px;
+        padding: 0 22px;
+        border-radius: 999px;
+        text-decoration: none;
+        background: linear-gradient(180deg, rgba(239, 115, 80, 0.82) 0%, rgba(217, 77, 39, 0.9) 100%);
+        color: #fff7f2;
+        font-size: 16px;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="card">
+      <p class="eyebrow">Subscription updated</p>
+      <h1>${title}</h1>
+      <p>${message}</p>
+      <a class="cta" href="${safeReturn}">${ctaLabel}</a>
+    </section>
   </body>
 </html>`;
 }
@@ -1560,6 +1723,159 @@ async function handleCreateCheckoutSession(req, res, parsedUrl) {
   }
 }
 
+async function handleCreateBillingPortalSession(req, res, parsedUrl) {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  let body;
+  try {
+    body = await parseJsonBody(req);
+  } catch (error) {
+    sendJson(res, 400, { error: error.message || "Invalid request body." });
+    return;
+  }
+
+  const deviceToken = getDeviceToken(req, parsedUrl, body);
+  const returnUrl = sanitizeExtensionReturnUrl(body.returnUrl || body.return_url || "");
+  if (!deviceToken) {
+    sendJson(res, 400, { error: "device_token is required." });
+    return;
+  }
+
+  const state = readState();
+  const account = getAccountForDevice(state, deviceToken);
+  if (!account) {
+    sendJson(res, 401, { error: "Sign in is required before managing a subscription." });
+    return;
+  }
+
+  const customerId = state.accountToCustomer[account.id];
+  if (!customerId) {
+    sendJson(res, 404, { error: "No Stripe customer found for this account." });
+    return;
+  }
+
+  try {
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: returnUrl || getPublicUrl("/paywall/cancel"),
+    });
+    sendJson(res, 200, { ok: true, url: session.url });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message || "Unable to create billing portal session." });
+  }
+}
+
+async function handleBillingPortalStart(req, res, parsedUrl) {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  const deviceToken = getDeviceToken(req, parsedUrl, null);
+  const requestedReturnUrl = sanitizeExtensionReturnUrl(parsedUrl.searchParams.get("return_url") || "");
+  const returnUrl =
+    requestedReturnUrl ||
+    `${getPublicUrl("/portal/return")}?device_token=${encodeURIComponent(deviceToken)}`;
+  if (!deviceToken) {
+    sendJson(res, 400, { error: "device_token is required." });
+    return;
+  }
+
+  const state = readState();
+  const account = getAccountForDevice(state, deviceToken);
+  if (!account) {
+    sendHtml(res, 401, renderAuthCompletePage("Sign-in required", "Please sign in before managing your subscription.", returnUrl));
+    return;
+  }
+
+  const customerId = state.accountToCustomer[account.id];
+  if (!customerId) {
+    sendHtml(res, 404, renderAuthCompletePage("No subscription found", "No Stripe customer was found for this account.", returnUrl));
+    return;
+  }
+
+  try {
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: returnUrl,
+    });
+    redirect(res, session.url);
+  } catch (error) {
+    sendHtml(
+      res,
+      500,
+      renderAuthCompletePage(
+        "Billing unavailable",
+        error.message || "Unable to open subscription settings.",
+        returnUrl
+      )
+    );
+  }
+}
+
+async function handlePortalReturn(req, res, parsedUrl) {
+  const deviceToken = getDeviceToken(req, parsedUrl, null);
+  const state = readState();
+  const account = getAccountForDevice(state, deviceToken);
+  const subscription = await resolveSubscriptionStatusForAccount(state, account);
+  const returnUrl = "https://mail.google.com";
+  const periodEndLabel = formatPeriodEndLabel(subscription.plan?.currentPeriodEnd);
+
+  if (!account) {
+    sendHtml(
+      res,
+      200,
+      renderPortalReturnPage({
+        title: "Subscription settings updated",
+        message: "Return to the extension to refresh your current access status.",
+        returnUrl,
+      })
+    );
+    return;
+  }
+
+  if (subscription.active && subscription.plan?.cancelAtPeriodEnd) {
+    sendHtml(
+      res,
+      200,
+      renderPortalReturnPage({
+        title: "Subscription canceled",
+        message: periodEndLabel
+          ? `Your access stays active until ${periodEndLabel}. After that, your plan will not renew.`
+          : "Your plan will stay active until the end of the current billing period and will not renew.",
+        returnUrl,
+      })
+    );
+    return;
+  }
+
+  if (subscription.active) {
+    sendHtml(
+      res,
+      200,
+      renderPortalReturnPage({
+        title: "Subscription active",
+        message: periodEndLabel
+          ? `Your current plan is active through ${periodEndLabel}.`
+          : "Your current plan is active on this account.",
+        returnUrl,
+      })
+    );
+    return;
+  }
+
+  sendHtml(
+    res,
+    200,
+    renderPortalReturnPage({
+      title: "Subscription ended",
+      message: "This account no longer has an active paid plan.",
+      returnUrl,
+    })
+  );
+}
+
 async function handlePlaybackUsage(req, res, parsedUrl) {
   let body;
   try {
@@ -1582,7 +1898,7 @@ async function handlePlaybackUsage(req, res, parsedUrl) {
   if (!usedSeconds) {
     const state = readState();
     const account = getAccountForDevice(state, deviceToken);
-    const subscription = await lookupSubscriptionStatusForAccount(state, account);
+    const subscription = await resolveSubscriptionStatusForAccount(state, account);
     const remainingSeconds = subscription.active
       ? getPaidSecondsLeft(state, account, subscription)
       : getFreeTrialRemainingSeconds(state, account, deviceToken, timeZone);
@@ -1592,7 +1908,8 @@ async function handlePlaybackUsage(req, res, parsedUrl) {
     sendJson(res, 200, {
       paid: subscription.active,
       subscriptionStatus: subscription.status || "none",
-      plan: subscription.plan?.planId || null,
+      plan: subscription.plan || null,
+      planId: subscription.plan?.planId || null,
       minutesLeft: displayMinutesFromSeconds(remainingSeconds),
       remainingSeconds,
       freeTrialSeconds: FREE_TRIAL_SECONDS,
@@ -1603,7 +1920,7 @@ async function handlePlaybackUsage(req, res, parsedUrl) {
 
   const state = readState();
   const account = getAccountForDevice(state, deviceToken);
-  const subscription = await lookupSubscriptionStatusForAccount(state, account);
+  const subscription = await resolveSubscriptionStatusForAccount(state, account);
   const ok = subscription.active
     ? deductPaidSeconds(state, account, subscription, usedSeconds)
     : deductFreeTrialSeconds(state, account, deviceToken, usedSeconds, timeZone);
@@ -1624,7 +1941,8 @@ async function handlePlaybackUsage(req, res, parsedUrl) {
   sendJson(res, 200, {
     paid: subscription.active,
     subscriptionStatus: subscription.status || "none",
-    plan: subscription.plan?.planId || null,
+    plan: subscription.plan || null,
+    planId: subscription.plan?.planId || null,
     minutesLeft: displayMinutesFromSeconds(remainingSeconds),
     remainingSeconds,
     freeTrialSeconds: FREE_TRIAL_SECONDS,
@@ -1654,7 +1972,7 @@ async function handleSubscriptionStatus(req, res, parsedUrl) {
   try {
     const state = readState();
     const account = getAccountForDevice(state, deviceToken);
-    const status = await lookupSubscriptionStatusForAccount(state, account);
+    const status = await resolveSubscriptionStatusForAccount(state, account);
     const remainingSeconds = status.active
       ? getPaidSecondsLeft(state, account, status)
       : getFreeTrialRemainingSeconds(state, account, deviceToken, timeZone);
@@ -1804,7 +2122,7 @@ async function handleTts(req, res, parsedUrl) {
 
   const state = readState();
   const account = getAccountForDevice(state, deviceToken);
-  const subscription = await lookupSubscriptionStatusForAccount(state, account);
+  const subscription = await resolveSubscriptionStatusForAccount(state, account);
   const remainingSeconds = subscription.active
     ? getPaidSecondsLeft(state, account, subscription)
     : getFreeTrialRemainingSeconds(state, account, deviceToken, timeZone);
@@ -1989,6 +2307,26 @@ const server = http.createServer(async (req, res) => {
     (parsedUrl.pathname === "/stripe/checkout-session" || parsedUrl.pathname === "/checkout")
   ) {
     await handleCreateCheckoutSession(req, res, parsedUrl);
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/billing/portal") {
+    await handleCreateBillingPortalSession(req, res, parsedUrl);
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/billing/portal/start") {
+    await handleBillingPortalStart(req, res, parsedUrl);
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/portal/start") {
+    await handleBillingPortalStart(req, res, parsedUrl);
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/portal/return") {
+    await handlePortalReturn(req, res, parsedUrl);
     return;
   }
 

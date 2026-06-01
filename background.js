@@ -29,6 +29,29 @@ let subscriptionCache = {
   timestamp: 0,
 };
 
+function normalizePlanDetails(plan, fallbackPlanId = "") {
+  if (plan && typeof plan === "object" && !Array.isArray(plan)) {
+    return {
+      planId: typeof plan.planId === "string" ? plan.planId : fallbackPlanId || null,
+      interval: plan.interval || null,
+      currentPeriodStart: plan.currentPeriodStart || null,
+      currentPeriodEnd: plan.currentPeriodEnd || null,
+      cancelAtPeriodEnd: Boolean(plan.cancelAtPeriodEnd),
+      cancelAt: plan.cancelAt || null,
+    };
+  }
+
+  if (typeof plan === "string" && plan.trim()) {
+    return { planId: plan.trim() };
+  }
+
+  if (fallbackPlanId) {
+    return { planId: fallbackPlanId };
+  }
+
+  return null;
+}
+
 function getTrialDayKey(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -329,7 +352,7 @@ async function getSubscriptionStatus(forceRefresh = false) {
     deviceToken,
     active: !!data.paid,
     status: data.subscriptionStatus || "none",
-    plan: data.plan ? { planId: data.plan } : null,
+    plan: normalizePlanDetails(data.plan, data.planId || ""),
     remainingSeconds: effectiveRemainingSeconds,
     minutesLeft: Number.isFinite(Number(data.minutesLeft))
       ? Math.max(0, Number(data.minutesLeft))
@@ -425,7 +448,7 @@ async function addPlaybackUsage(rawSeconds) {
     ...subscriptionCache,
     active: !!data.paid,
     status: data.subscriptionStatus || subscriptionCache.status || "none",
-    plan: data.plan ? { planId: data.plan } : null,
+    plan: normalizePlanDetails(data.plan, data.planId || ""),
     minutesLeft: Number.isFinite(Number(data.minutesLeft))
       ? Math.max(0, Number(data.minutesLeft))
       : subscriptionCache.minutesLeft,
@@ -520,6 +543,24 @@ async function createCheckoutSession(planId, returnUrl) {
   };
 }
 
+async function createBillingPortalSession(_returnUrl) {
+  const deviceToken = await getOrCreateDeviceToken();
+  const authState = await getAuthState();
+
+  if (!authState.signedIn || !authState.email) {
+    throw new Error("Sign in required before managing your subscription.");
+  }
+
+  const url = new URL(`${REMOTE_API_BASE_URL}/portal/start`);
+  url.searchParams.set("device_token", deviceToken);
+
+  return {
+    deviceToken,
+    email: authState.email,
+    url: url.toString(),
+  };
+}
+
 async function trackAnalyticsEvent(name, params = {}, sessionId = "") {
   const data = await fetchJsonFromEndpoints("/analytics/event", {
     method: "POST",
@@ -581,6 +622,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => {
         const errorMessage =
           error && error.message ? error.message : "Failed to create checkout session.";
+        sendResponse({ ok: false, error: errorMessage });
+      });
+    return true;
+  }
+
+  if (message.type === "createBillingPortalSession") {
+    createBillingPortalSession(message.returnUrl)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => {
+        const errorMessage =
+          error && error.message ? error.message : "Failed to open billing portal.";
         sendResponse({ ok: false, error: errorMessage });
       });
     return true;

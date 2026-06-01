@@ -23,6 +23,8 @@ const fileInput = document.getElementById("fileInput");
 const paywallStatusEl = document.getElementById("paywallStatus");
 const paywallTrialAlertEl = document.getElementById("paywallTrialAlert");
 const paywallIntroEl = document.getElementById("paywallIntro");
+const monthlyPlanCard = document.getElementById("monthlyPlanCard");
+const annualPlanCard = document.getElementById("annualPlanCard");
 const continueCheckoutMonthlyBtn = document.getElementById("continueCheckoutMonthly");
 const continueCheckoutAnnualBtn = document.getElementById("continueCheckoutAnnual");
 const accountActionBtn = document.getElementById("accountAction");
@@ -30,6 +32,10 @@ const authMessageEl = document.getElementById("authMessage");
 const authCopyEl = document.getElementById("authCopy");
 const authGoogleBtn = document.getElementById("authGoogle");
 const authPanelEl = document.getElementById("authPanel");
+const activeSubscriptionPanelEl = document.getElementById("activeSubscriptionPanel");
+const activeSubscriptionCopyEl = document.getElementById("activeSubscriptionCopy");
+const changePlanBtn = document.getElementById("changePlanBtn");
+const cancelSubscriptionBtn = document.getElementById("cancelSubscriptionBtn");
 const profileTriggerBtn = document.getElementById("profileTrigger");
 const closeDrawerBtn = document.getElementById("closeDrawer");
 const drawerBackdropEl = document.getElementById("drawerBackdrop");
@@ -38,6 +44,7 @@ const drawerPlanMetaEl = document.getElementById("drawerPlanMeta");
 const drawerTrialNoticeEl = document.getElementById("drawerTrialNotice");
 const drawerEmailEl = document.getElementById("drawerEmail");
 const drawerUpgradeBtn = document.getElementById("drawerUpgrade");
+const drawerManageSubscriptionBtn = document.getElementById("drawerManageSubscription");
 const authToastEl = document.getElementById("authToast");
 const authOverlayEl = document.getElementById("authOverlay");
 const readerScreenEl = document.getElementById("readerScreen");
@@ -144,6 +151,32 @@ const PLAN_META = {
     planMeta: "$89.99 billed yearly for unlimited listening.",
   },
 };
+
+const PLAN_LABELS = {
+  monthly: "monthly",
+  annual: "yearly",
+};
+
+function formatPlanDateLabel(value) {
+  if (!value) {
+    return "";
+  }
+
+  const numericValue = Number(value);
+  const date =
+    Number.isFinite(numericValue) && numericValue > 0
+      ? new Date(numericValue * 1000)
+      : new Date(String(value));
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(date);
+}
 
 const STATUS_LABELS = {
   idle: "Ready",
@@ -395,9 +428,16 @@ function getPlanPresentation() {
   if (currentSubscription?.active) {
     const activePlanId = currentSubscription?.plan?.planId || "";
     const activePlanMeta = PLAN_META[activePlanId] || {};
+    const endLabel = formatPlanDateLabel(currentSubscription?.plan?.currentPeriodEnd);
+    const datedMeta =
+      currentSubscription?.plan?.cancelAtPeriodEnd && endLabel
+        ? `Ends on ${endLabel}.`
+        : endLabel
+        ? `Renews on ${endLabel}.`
+        : activePlanMeta.planMeta || "Unlimited listening is active on this account.";
     return {
       name: activePlanMeta.planSummary || "Unlimited Listening",
-      meta: activePlanMeta.planMeta || "Unlimited listening is active on this account.",
+      meta: datedMeta,
     };
   }
 
@@ -483,6 +523,26 @@ function updateUI() {
   drawerEmailEl.textContent = authState.signedIn ? authState.email : "Guest mode";
   accountActionBtn.textContent = authState.signedIn ? "Sign out" : "Sign in with Google";
   drawerUpgradeBtn.classList.toggle("hidden", currentSubscription?.active);
+  drawerManageSubscriptionBtn?.classList.toggle(
+    "hidden",
+    !(authState.signedIn && currentSubscription?.active)
+  );
+  const hasActiveSubscription = Boolean(currentSubscription?.active);
+  authPanelEl?.classList.toggle("hidden", hasActiveSubscription);
+  activeSubscriptionPanelEl?.classList.toggle("hidden", !hasActiveSubscription);
+  monthlyPlanCard?.classList.toggle("hidden", hasActiveSubscription);
+  annualPlanCard?.classList.toggle("hidden", hasActiveSubscription);
+  if (activeSubscriptionCopyEl) {
+    const activePlanId = currentSubscription?.plan?.planId || "monthly";
+    const currentLabel = PLAN_LABELS[activePlanId] || activePlanId;
+    const endLabel = formatPlanDateLabel(currentSubscription?.plan?.currentPeriodEnd);
+    activeSubscriptionCopyEl.textContent =
+      currentSubscription?.plan?.cancelAtPeriodEnd && endLabel
+        ? `Your ${currentLabel} subscription will end on ${endLabel}. You can keep listening until then.`
+        : endLabel
+        ? `Your ${currentLabel} subscription renews on ${endLabel}. Use Stripe to change plans or cancel renewal.`
+        : `Your ${currentLabel} subscription is active. Use Stripe to change plans or cancel renewal.`;
+  }
   if (!currentFileBuffer && !trialExhausted) {
     state.message = "Open a PDF in Chrome and start playback in the side panel.";
     hintEl.textContent = state.message;
@@ -678,7 +738,15 @@ function cleanupCurrentAudio() {
   }
 }
 
+function revokePrefetchedChunkMedia(chunk = prefetchedChunk) {
+  if (chunk?.objectUrl) {
+    URL.revokeObjectURL(chunk.objectUrl);
+    chunk.objectUrl = "";
+  }
+}
+
 function clearPrefetch() {
+  revokePrefetchedChunkMedia(prefetchedChunk);
   prefetchedChunk = null;
   prefetchPromise = null;
   prefetchedChunkIndex = -1;
@@ -958,6 +1026,12 @@ async function requestTtsBytes(text, speed = state.speed) {
   return requestPromise;
 }
 
+function buildAudioObjectUrl(payload) {
+  const byteArray = payload.byteArray || Uint8Array.from(payload.bytes);
+  payload.byteArray = byteArray;
+  return URL.createObjectURL(new Blob([byteArray], { type: payload.mimeType }));
+}
+
 async function prefetchNextChunk(nextIndex, token) {
   if (token !== playbackToken || nextIndex >= textChunks.length) {
     return;
@@ -982,10 +1056,12 @@ async function prefetchNextChunk(nextIndex, token) {
       if (token !== playbackToken) {
         return;
       }
+      const objectUrl = buildAudioObjectUrl(payload);
       prefetchedChunk = {
         index: nextIndex,
         speed: requestedSpeed,
         payload,
+        objectUrl,
       };
     })
     .catch(() => null)
@@ -1009,10 +1085,11 @@ async function resolveChunkPayload(chunkIndex, token) {
     prefetchedChunk.speed === state.speed
   ) {
     const payload = prefetchedChunk.payload;
+    const objectUrl = prefetchedChunk.objectUrl || "";
     prefetchedChunk = null;
     prefetchedChunkIndex = -1;
     prefetchedChunkSpeed = null;
-    return payload;
+    return { payload, objectUrl };
   }
 
   if (
@@ -1028,14 +1105,18 @@ async function resolveChunkPayload(chunkIndex, token) {
       prefetchedChunk.speed === state.speed
     ) {
       const payload = prefetchedChunk.payload;
+      const objectUrl = prefetchedChunk.objectUrl || "";
       prefetchedChunk = null;
       prefetchedChunkIndex = -1;
       prefetchedChunkSpeed = null;
-      return payload;
+      return { payload, objectUrl };
     }
   }
 
-  return requestTtsBytes(textChunks[chunkIndex]);
+  return {
+    payload: await requestTtsBytes(textChunks[chunkIndex]),
+    objectUrl: "",
+  };
 }
 
 function commitPlaybackUsageInBackground(token) {
@@ -1191,6 +1272,19 @@ function getCurrentBookmarks() {
     : [];
 }
 
+function getRecentEntriesWithBookmarks(excludeId = "") {
+  const recentItems = Array.isArray(libraryState.recent) ? libraryState.recent : [];
+  return recentItems
+    .filter((entry) => entry?.id && entry.id !== excludeId)
+    .map((entry) => ({
+      ...entry,
+      bookmarks: Array.isArray(libraryState.bookmarks?.[entry.id])
+        ? libraryState.bookmarks[entry.id]
+        : [],
+    }))
+    .filter((entry) => entry.bookmarks.length > 0);
+}
+
 function formatChunkLabel(chunkIndex, totalChunks = state.totalChunks) {
   const safeTotal = Math.max(0, Number(totalChunks) || 0);
   const safeChunk = Math.max(0, Number(chunkIndex) || 0);
@@ -1265,6 +1359,7 @@ function updateLibraryUI() {
   const latestResume = getLatestResumeEntry();
   const latestRecent = getLatestRecentEntry();
   const bookmarks = getCurrentBookmarks();
+  const bookmarkedRecentEntries = getRecentEntriesWithBookmarks(currentPdfId);
 
   const showResume =
     Boolean(latestResume) ||
@@ -1296,16 +1391,14 @@ function updateLibraryUI() {
     resumePlaybackBtn.textContent = "Resume";
   }
 
-  const showBookmarks = Boolean(currentPdfId);
+  const showBookmarks = Boolean(currentPdfId) || bookmarkedRecentEntries.length > 0;
   bookmarksSectionEl.classList.toggle("hidden", !showBookmarks);
   if (!showBookmarks) {
     isBookmarksExpanded = false;
     syncLibrarySectionToggles();
     return;
   }
-  if (!bookmarks.length) {
-    renderEmptyState(bookmarkListEl, "Save a section to return to it later.");
-  } else {
+  if (bookmarks.length) {
     bookmarkListEl.innerHTML = bookmarks
       .map(
         (bookmark, index) => `
@@ -1322,20 +1415,40 @@ function updateLibraryUI() {
         `
       )
       .join("");
+  } else if (bookmarkedRecentEntries.length) {
+    bookmarkListEl.innerHTML = bookmarkedRecentEntries
+      .map(
+        (entry) => `
+          <div class="library-item">
+            <div class="library-item-main">
+              <p class="library-item-title">${entry.name || "Saved PDF"}</p>
+              <p class="library-item-meta">${entry.bookmarks.length} saved section${entry.bookmarks.length === 1 ? "" : "s"}</p>
+            </div>
+            <div class="library-item-actions">
+              <button class="library-action" type="button" data-action="open-bookmark-pdf" data-pdf-id="${entry.id}">Open PDF</button>
+            </div>
+          </div>
+        `
+      )
+      .join("");
+  } else {
+    renderEmptyState(bookmarkListEl, "Save a section to return to it later.");
   }
   syncLibrarySectionToggles();
 }
 
-async function removeBookmark(index) {
-  if (!currentPdfId || !Number.isInteger(index) || index < 0) {
+async function removeBookmark(index, pdfId = currentPdfId) {
+  if (!pdfId || !Number.isInteger(index) || index < 0) {
     return;
   }
-  const bookmarks = getCurrentBookmarks().slice();
+  const bookmarks = Array.isArray(libraryState.bookmarks?.[pdfId])
+    ? libraryState.bookmarks[pdfId].slice()
+    : [];
   if (index >= bookmarks.length) {
     return;
   }
   bookmarks.splice(index, 1);
-  libraryState.bookmarks[currentPdfId] = bookmarks;
+  libraryState.bookmarks[pdfId] = bookmarks;
   updateLibraryUI();
   await persistLibraryState({ skipUi: true });
 }
@@ -1805,6 +1918,53 @@ async function openCheckoutForPlan(planId) {
   }
 }
 
+async function openBillingPortal() {
+  if (!authState.signedIn) {
+    setPaywallStatus("Sign in before managing your subscription.");
+    return;
+  }
+
+  if (!currentSubscription?.active) {
+    setPaywallStatus("No active subscription found on this account.");
+    return;
+  }
+
+  if (drawerManageSubscriptionBtn) {
+    drawerManageSubscriptionBtn.disabled = true;
+    drawerManageSubscriptionBtn.textContent = "Opening billing...";
+  }
+  if (changePlanBtn) {
+    changePlanBtn.disabled = true;
+  }
+  if (cancelSubscriptionBtn) {
+    cancelSubscriptionBtn.disabled = true;
+  }
+  try {
+    const result = await sendRuntimeMessage({
+      type: "createBillingPortalSession",
+      returnUrl: await getActiveTabUrl(),
+    });
+    if (!result.url) {
+      throw new Error("Billing portal URL is missing.");
+    }
+    chrome.tabs.create({ url: result.url });
+    closeDrawer();
+  } catch (error) {
+    setPaywallStatus(error.message || "Unable to open subscription settings.");
+  } finally {
+    if (drawerManageSubscriptionBtn) {
+      drawerManageSubscriptionBtn.disabled = false;
+      drawerManageSubscriptionBtn.textContent = "Cancel subscription";
+    }
+    if (changePlanBtn) {
+      changePlanBtn.disabled = false;
+    }
+    if (cancelSubscriptionBtn) {
+      cancelSubscriptionBtn.disabled = false;
+    }
+  }
+}
+
 function formatRemainingSeconds(seconds) {
   const safeSeconds = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
   return `${Math.ceil(safeSeconds)} sec`;
@@ -2201,7 +2361,7 @@ async function prepareSelectedFile(file) {
     isPreparingText = true;
     preparationComplete = false;
     currentFileBuffer = buffer;
-    const pdf = await openPdfDocument(currentFileBuffer.slice(0));
+    const pdf = await openPdfDocument(currentFileBuffer);
     void saveDocumentPromise.catch(() => null);
     void openInBrowserPromise;
     if (runId !== activePreparationRunId) {
@@ -2311,7 +2471,7 @@ async function openRecentPdf(id) {
     isPreparingText = true;
     preparationComplete = false;
     currentFileBuffer = record.buffer;
-    const pdf = await openPdfDocument(currentFileBuffer.slice(0));
+    const pdf = await openPdfDocument(currentFileBuffer);
     if (runId !== activePreparationRunId) {
       return;
     }
@@ -2444,9 +2604,9 @@ async function speakCurrentChunk(token = playbackToken) {
 
   void prefetchNextChunk(currentChunkIndex + 1, token);
 
-  let payload;
+  let resolvedPayload;
   try {
-    payload = await payloadPromise;
+    resolvedPayload = await payloadPromise;
   } catch (error) {
     const details = getFriendlyRuntimeMessage(
       error,
@@ -2462,9 +2622,8 @@ async function speakCurrentChunk(token = playbackToken) {
 
   cleanupCurrentAudio();
   currentAudio = new Audio();
-  currentAudioUrl = URL.createObjectURL(
-    new Blob([Uint8Array.from(payload.bytes)], { type: payload.mimeType })
-  );
+  const payload = resolvedPayload.payload;
+  currentAudioUrl = resolvedPayload.objectUrl || buildAudioObjectUrl(payload);
   currentAudio.src = currentAudioUrl;
   currentAudio.playbackRate = getEffectiveSpeed(state.speed);
   currentAudio.onended = () => {
@@ -2627,6 +2786,14 @@ addBookmarkBtn?.addEventListener("click", () => {
 });
 
 bookmarkListEl?.addEventListener("click", (event) => {
+  const openPdfButton = event.target.closest("[data-action='open-bookmark-pdf']");
+  if (openPdfButton instanceof HTMLElement) {
+    const pdfId = openPdfButton.dataset.pdfId || "";
+    if (pdfId) {
+      void openRecentPdf(pdfId);
+    }
+    return;
+  }
   const removeButton = event.target.closest("[data-action='remove-bookmark']");
   if (removeButton instanceof HTMLElement) {
     const index = Number(removeButton.dataset.index);
@@ -2702,7 +2869,12 @@ speedSelect.addEventListener("change", async (event) => {
 });
 
 profileTriggerBtn.addEventListener("click", () => {
+  drawerPlanNameEl.textContent = "Checking access...";
+  drawerPlanMetaEl.textContent = "Refreshing your listening access...";
+  drawerUpgradeBtn.classList.add("hidden");
+  drawerManageSubscriptionBtn?.classList.add("hidden");
   openDrawer();
+  void loadAuthState().then(() => loadSubscriptionStatus());
 });
 
 closeDrawerBtn.addEventListener("click", () => {
@@ -2716,6 +2888,18 @@ drawerBackdropEl.addEventListener("click", () => {
 drawerUpgradeBtn.addEventListener("click", () => {
   void trackAnalyticsEvent("upgrade_clicked", { source: "drawer_upgrade" });
   openPaywall("drawer_upgrade");
+});
+
+drawerManageSubscriptionBtn?.addEventListener("click", () => {
+  void openBillingPortal();
+});
+
+changePlanBtn?.addEventListener("click", () => {
+  void openBillingPortal();
+});
+
+cancelSubscriptionBtn?.addEventListener("click", () => {
+  void openBillingPortal();
 });
 
 accountActionBtn.addEventListener("click", () => {
