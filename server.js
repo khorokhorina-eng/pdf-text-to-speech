@@ -1127,28 +1127,9 @@ function renderAuthCompletePage(title, message, returnUrl = "", analyticsEvent =
 </html>`;
 }
 
-function renderThankYouPage(title, message, returnUrl = "", purchase = null) {
+function renderThankYouPage(title, message, returnUrl = "") {
   const safeReturn = sanitizeExtensionReturnUrl(returnUrl);
-  const purchasePayload =
-    purchase &&
-    Number.isFinite(Number(purchase.value)) &&
-    purchase.currency &&
-    purchase.transactionId
-      ? {
-          transaction_id: String(purchase.transactionId),
-          value: Number(purchase.value),
-          currency: String(purchase.currency).toUpperCase(),
-          items: [
-            {
-              item_id: String(purchase.planId || "pdf-text-to-speech-plan"),
-              item_name: String(purchase.planName || "PDF Text to Speech plan"),
-              price: Number(purchase.value),
-              quantity: 1,
-            },
-          ],
-        }
-      : null;
-  const ga4 = renderGa4Snippet("/thank-you", purchasePayload ? "purchase" : "", purchasePayload);
+  const ga4 = renderGa4Snippet("/thank-you");
 
   return `<!doctype html>
 <html>
@@ -1929,28 +1910,7 @@ async function handleSuccessPage(res, parsedUrl) {
   const returnUrl =
     sanitizeExtensionReturnUrl(parsedUrl.searchParams.get("return_url") || "") ||
     sanitizeExtensionReturnUrl(mappedReturnUrl);
-  let purchase = null;
-
-  if (stripe && sessionId) {
-    try {
-      const session = await stripe.checkout.sessions.retrieve(sessionId);
-      const planId =
-        session.metadata?.planId ||
-        session.subscription_details?.metadata?.planId ||
-        "pdf-text-to-speech-plan";
-      purchase = {
-        transactionId: session.id,
-        value: Number(session.amount_total || 0) / 100,
-        currency: session.currency || "usd",
-        planId,
-        planName: getPlanById(planId)?.name || "PDF Text to Speech plan",
-      };
-    } catch (_error) {
-      purchase = null;
-    }
-  }
-
-  sendHtml(res, 200, renderThankYouPage("Thank you", "Your payment was successful.", returnUrl, purchase));
+  sendHtml(res, 200, renderThankYouPage("Thank you", "Your payment was successful.", returnUrl));
 }
 
 function handleCancelPage(res) {
