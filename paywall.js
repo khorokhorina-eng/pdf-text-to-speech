@@ -39,11 +39,13 @@ function updateButtons() {
   planButtons.forEach((button) => {
     const planId = button.dataset.planId || "";
     const isCurrentPlan = currentSubscription?.active && activePlanId === planId;
+    const currentLabel = planId === "annual" ? "Current yearly plan" : "Current monthly plan";
+    const unlockLabel = planId === "annual" ? "Unlock yearly" : "Unlock monthly";
     button.disabled = isCurrentPlan;
     button.textContent = isCurrentPlan
-      ? "Current plan"
+      ? currentLabel
       : authState.signedIn
-      ? "Upgrade"
+      ? unlockLabel
       : "Sign in first";
   });
 }
@@ -61,7 +63,7 @@ async function loadAuthState() {
   authSignedInTextEl.textContent = authState.signedIn ? `Signed in as ${authState.email}` : "";
   authMessageEl.textContent = authState.signedIn
     ? ""
-    : "Use your 5 free minutes first. Sign in with Google when you want to buy a plan.";
+    : "Sign in with Google when you want to unlock unlimited listening.";
   updateButtons();
 }
 
