@@ -20,7 +20,7 @@
     <main class="page">
       <section class="hero">
         <p class="eyebrow">Pricing</p>
-        <h1>Start with 120 free seconds, then choose a paid plan.</h1>
+        <h1>Start with 3 free minutes each day, then choose a paid plan.</h1>
         <p class="lead">
           Free listening is limited. Continued playback requires a paid plan
           through Stripe.
@@ -29,7 +29,7 @@
 
       <section class="section">
         <div class="price-grid">
-          <article class="price-card">
+          <article class="price-card" data-plan-id="monthly">
             <h3>Monthly plan</h3>
             <p class="price">$9.99</p>
             <p class="price-note">per month</p>
@@ -39,7 +39,7 @@
               <li>Managed through Stripe</li>
             </ul>
           </article>
-          <article class="price-card">
+          <article class="price-card" data-plan-id="annual">
             <h3>Annual plan</h3>
             <p class="price">$89.99</p>
             <p class="price-note">per year</p>
@@ -58,5 +58,32 @@
         through the extension and Stripe.
       </div>
     </footer>
+    <script>
+      fetch("/plans")
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error("Failed to load plans");
+          }
+          return response.json();
+        })
+        .then((data) => {
+          const plans = Array.isArray(data?.plans) ? data.plans : [];
+          plans.forEach((plan) => {
+            const card = document.querySelector(`[data-plan-id="${plan.planId}"]`);
+            if (!card) {
+              return;
+            }
+            const priceEl = card.querySelector(".price");
+            const noteEl = card.querySelector(".price-note");
+            if (priceEl && plan.displayPrice) {
+              priceEl.textContent = plan.displayPrice;
+            }
+            if (noteEl) {
+              noteEl.textContent = plan.interval === "year" ? "per year" : "per month";
+            }
+          });
+        })
+        .catch(() => {});
+    </script>
   </body>
 </html>

@@ -152,6 +152,8 @@ const PLAN_META = {
   },
 };
 
+let pricingPlans = [];
+
 const PLAN_LABELS = {
   monthly: "monthly",
   annual: "yearly",
@@ -424,10 +426,62 @@ function showAuthSuccessToast() {
   }, 3200);
 }
 
+function getPricingPlan(planId) {
+  return pricingPlans.find((plan) => plan.planId === planId) || null;
+}
+
+function getDisplayPlanMeta(planId) {
+  const normalizedPlanId = planId === "yearly" ? "annual" : planId;
+  const pricing = getPricingPlan(normalizedPlanId);
+  const fallback = PLAN_META[normalizedPlanId] || {};
+  return {
+    ...fallback,
+    billingNote: pricing?.billingNote || fallback.billingNote || "",
+    price: pricing?.perDayPrice || fallback.price || "",
+    unit: pricing?.perDayPrice ? "/day" : fallback.unit || "",
+  };
+}
+
+function renderPaywallPricing() {
+  const planCards = [
+    { card: monthlyPlanCard, meta: getDisplayPlanMeta("monthly") },
+    { card: annualPlanCard, meta: getDisplayPlanMeta("annual") },
+  ];
+
+  planCards.forEach(({ card, meta }) => {
+    if (!card || !meta) {
+      return;
+    }
+    const priceEl = card.querySelector(".paywall-price");
+    const unitEl = card.querySelector(".paywall-price-unit");
+    const billingNoteEl = card.querySelector(".paywall-billing-note");
+    if (priceEl && meta.price) {
+      priceEl.textContent = meta.price;
+    }
+    if (unitEl) {
+      unitEl.textContent = meta.unit || "";
+    }
+    if (billingNoteEl && meta.billingNote) {
+      billingNoteEl.textContent = meta.billingNote;
+    }
+  });
+}
+
+async function loadPricingPlans() {
+  try {
+    const result = await sendRuntimeMessage({ type: "getPricingPlans" });
+    pricingPlans = Array.isArray(result.plans) ? result.plans : [];
+  } catch (_error) {
+    pricingPlans = [];
+  }
+  renderPaywallPricing();
+  updateUI();
+}
+
 function getPlanPresentation() {
   if (currentSubscription?.active) {
     const activePlanId = currentSubscription?.plan?.planId || "";
-    const activePlanMeta = PLAN_META[activePlanId] || {};
+    const activePlanMeta = getDisplayPlanMeta(activePlanId);
     const endLabel = formatPlanDateLabel(currentSubscription?.plan?.currentPeriodEnd);
     const datedMeta =
       currentSubscription?.plan?.cancelAtPeriodEnd && endLabel
@@ -1889,7 +1943,7 @@ async function openCheckoutForPlan(planId) {
     const result = await sendRuntimeMessage({
       type: "createCheckoutSession",
       planId,
-      returnUrl: chrome.runtime.getURL("popup.html"),
+      returnUrl: await getActiveTabUrl(),
     });
     if (!result.url) {
       throw new Error("Checkout URL is missing.");
@@ -2951,6 +3005,7 @@ window.addEventListener("focus", () => {
 setActiveScreen("reader");
 updateUI();
 void loadLibraryState()
+  .then(() => loadPricingPlans())
   .then(() => loadAuthState())
   .then(() => refreshQuotaSnapshot())
   .then(() => {

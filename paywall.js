@@ -11,6 +11,7 @@ const authSignOutBtn = document.getElementById("authSignOut");
 
 let currentSubscription = { active: false, plan: null };
 let authState = { signedIn: false, email: "", method: null };
+let pricingPlans = [];
 
 function setStatus(text, ok = false) {
   statusEl.textContent = text;
@@ -50,6 +51,32 @@ function updateButtons() {
   });
 }
 
+function getPlanDetails(planId) {
+  return pricingPlans.find((plan) => plan.planId === planId) || null;
+}
+
+function renderPricing() {
+  document.querySelectorAll(".plan[data-plan-id]").forEach((planEl) => {
+    const planId = planEl.dataset.planId || "";
+    const details = getPlanDetails(planId);
+    if (!details) {
+      return;
+    }
+    const priceEl = planEl.querySelector(".price");
+    const periodEl = planEl.querySelector(".period");
+    const badgeEl = planEl.querySelector(".eyebrow");
+    if (priceEl && details.displayPrice) {
+      priceEl.textContent = details.displayPrice;
+    }
+    if (periodEl) {
+      periodEl.textContent = details.interval === "year" ? "per year" : "per month";
+    }
+    if (badgeEl && planId === "annual") {
+      badgeEl.textContent = details.badge || "Best Value";
+    }
+  });
+}
+
 async function loadAuthState() {
   const result = await sendMessage({ type: "getAuthState" });
   authState = {
@@ -73,7 +100,7 @@ async function signInWithGoogle() {
   try {
     await sendMessage({
       type: "startGoogleSignIn",
-      returnUrl: chrome.runtime.getURL("paywall.html"),
+      returnUrl: window.location.href,
     });
     setStatus("Complete Google sign-in in the opened tab. This page will work after you return.");
   } catch (error) {
@@ -114,7 +141,7 @@ async function openCheckout(planId, button) {
     const result = await sendMessage({
       type: "createCheckoutSession",
       planId,
-      returnUrl: chrome.runtime.getURL("paywall.html"),
+      returnUrl: window.location.href,
     });
 
     if (!result.url) {
@@ -130,6 +157,17 @@ async function openCheckout(planId, button) {
       button.textContent = initialLabel;
     }
     updateButtons();
+  }
+}
+
+async function loadPricingPlans() {
+  try {
+    const result = await sendMessage({ type: "getPricingPlans" });
+    pricingPlans = Array.isArray(result.plans) ? result.plans : [];
+    renderPricing();
+    updateButtons();
+  } catch (_error) {
+    pricingPlans = [];
   }
 }
 
@@ -188,4 +226,5 @@ window.addEventListener("focus", () => {
 });
 
 updateButtons();
+loadPricingPlans();
 loadSubscriptionStatus();

@@ -494,6 +494,66 @@ function getPlanByStripePriceId(priceId) {
   return PLAN_DEFINITIONS.find((plan) => plan.stripePriceId === priceId) || null;
 }
 
+function formatUsdAmountFromCents(amount) {
+  const cents = Number(amount);
+  if (!Number.isFinite(cents)) {
+    return "";
+  }
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+function formatPerDayAmount(amountCents, interval) {
+  const cents = Number(amountCents);
+  const divisor = interval === "year" ? 365 : 30;
+  if (!Number.isFinite(cents) || divisor <= 0) {
+    return "";
+  }
+  return `$${(cents / 100 / divisor).toFixed(2)}`;
+}
+
+async function resolvePricingPlans() {
+  if (!stripe) {
+    return PLAN_DEFINITIONS.map((plan) => ({
+      planId: plan.id,
+      label: plan.id === "annual" ? "Yearly" : "Monthly",
+      interval: plan.id === "annual" ? "year" : "month",
+      amountCents: null,
+      displayPrice: "",
+      perDayPrice: "",
+      billingNote: "",
+      badge: plan.id === "annual" ? "Best Value" : "",
+    }));
+  }
+
+  const plans = [];
+  for (const plan of PLAN_DEFINITIONS) {
+    if (!plan.stripePriceId) {
+      continue;
+    }
+
+    const price = await stripe.prices.retrieve(plan.stripePriceId);
+    const amountCents = Number(price.unit_amount || 0);
+    const interval = price.recurring?.interval || (plan.id === "annual" ? "year" : "month");
+    const displayAmount = formatUsdAmountFromCents(amountCents);
+
+    plans.push({
+      planId: plan.id,
+      label: plan.id === "annual" ? "Yearly" : "Monthly",
+      interval,
+      amountCents,
+      displayPrice: displayAmount,
+      perDayPrice: formatPerDayAmount(amountCents, interval),
+      billingNote:
+        interval === "year"
+          ? `Billed annually ${displayAmount} / year`
+          : `Billed monthly ${displayAmount} / month`,
+      badge: plan.id === "annual" ? "Best Value" : "",
+    });
+  }
+
+  return plans;
+}
+
 function getClientTimeZone(req, parsedUrl, body) {
   const raw =
     req.headers["x-time-zone"] ||
@@ -1032,6 +1092,19 @@ async function handleAuthMe(req, res, parsedUrl) {
   });
 }
 
+async function handlePlans(res) {
+  if (!ensureStripeConfigured(res)) {
+    return;
+  }
+
+  try {
+    const plans = await resolvePricingPlans();
+    sendJson(res, 200, { plans });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message || "Failed to load plans." });
+  }
+}
+
 function renderAuthCompletePage(title, message, returnUrl = "", analyticsEvent = null) {
   const safeReturn = sanitizeExtensionReturnUrl(returnUrl);
   const ga4 = renderGa4Snippet(
@@ -1212,8 +1285,8 @@ function formatPeriodEndLabel(value) {
   }).format(date);
 }
 
-function renderPortalReturnPage({ title, message, ctaLabel = "Back to Gmail", returnUrl = "" }) {
-  const safeReturn = sanitizeExtensionReturnUrl(returnUrl) || "https://mail.google.com";
+function renderPortalReturnPage({ title, message, ctaLabel = "Back to your document", returnUrl = "" }) {
+  const safeReturn = sanitizeExtensionReturnUrl(returnUrl) || getPublicUrl("/paywall/cancel");
   return `<!doctype html>
 <html>
   <head>
@@ -1686,6 +1759,16 @@ async function handleCreateCheckoutSession(req, res, parsedUrl) {
   }
 
   try {
+    const existingSubscription = await resolveSubscriptionStatusForAccount(state, account);
+    if (existingSubscription.active) {
+      sendJson(res, 409, {
+        error:
+          "An active subscription already exists on this account. Use subscription settings to change plans or cancel renewal.",
+        code: "active-subscription-exists",
+      });
+      return;
+    }
+
     const customerId = await ensureStripeCustomer(state, account);
     const cancelUrl = returnUrl || getPublicUrl("/paywall/cancel");
     const session = await stripe.checkout.sessions.create({
@@ -1819,7 +1902,9 @@ async function handlePortalReturn(req, res, parsedUrl) {
   const state = readState();
   const account = getAccountForDevice(state, deviceToken);
   const subscription = await resolveSubscriptionStatusForAccount(state, account);
-  const returnUrl = "https://mail.google.com";
+  const returnUrl =
+    sanitizeExtensionReturnUrl(parsedUrl.searchParams.get("return_url") || "") ||
+    getPublicUrl("/paywall/cancel");
   const periodEndLabel = formatPeriodEndLabel(subscription.plan?.currentPeriodEnd);
 
   if (!account) {
@@ -2279,6 +2364,11 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && parsedUrl.pathname === "/reg-complete") {
     handleRegistrationComplete(res, parsedUrl);
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/plans") {
+    await handlePlans(res);
     return;
   }
 

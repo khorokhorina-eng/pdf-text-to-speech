@@ -543,7 +543,7 @@ async function createCheckoutSession(planId, returnUrl) {
   };
 }
 
-async function createBillingPortalSession(_returnUrl) {
+async function createBillingPortalSession(returnUrl) {
   const deviceToken = await getOrCreateDeviceToken();
   const authState = await getAuthState();
 
@@ -553,12 +553,20 @@ async function createBillingPortalSession(_returnUrl) {
 
   const url = new URL(`${REMOTE_API_BASE_URL}/portal/start`);
   url.searchParams.set("device_token", deviceToken);
+  if (typeof returnUrl === "string" && returnUrl.trim()) {
+    url.searchParams.set("return_url", returnUrl.trim());
+  }
 
   return {
     deviceToken,
     email: authState.email,
     url: url.toString(),
   };
+}
+
+async function getPricingPlans() {
+  const data = await fetchJsonFromEndpoints("/plans");
+  return Array.isArray(data?.plans) ? data.plans : [];
 }
 
 async function trackAnalyticsEvent(name, params = {}, sessionId = "") {
@@ -633,6 +641,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => {
         const errorMessage =
           error && error.message ? error.message : "Failed to open billing portal.";
+        sendResponse({ ok: false, error: errorMessage });
+      });
+    return true;
+  }
+
+  if (message.type === "getPricingPlans") {
+    getPricingPlans()
+      .then((plans) => sendResponse({ ok: true, plans }))
+      .catch((error) => {
+        const errorMessage =
+          error && error.message ? error.message : "Failed to load pricing plans.";
         sendResponse({ ok: false, error: errorMessage });
       });
     return true;
