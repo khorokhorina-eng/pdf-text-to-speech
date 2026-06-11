@@ -30,13 +30,16 @@
             <p id="drawerPlanName" class="drawer-plan-name">Free Listening</p>
             <p id="drawerPlanMeta" class="drawer-plan-meta">Checking your listening access...</p>
             <p id="drawerTrialNotice" class="drawer-trial-notice hidden">
-              Your free listening limit refreshes every day.
+              Free plan: 3 free minutes each day.
             </p>
           </div>
         </div>
         <div class="drawer-actions">
           <button id="drawerUpgrade" class="drawer-upgrade-btn">Unlock Unlimited Listening</button>
-          <button id="drawerManageSubscription" class="drawer-link-btn hidden">Cancel subscription</button>
+          <div id="drawerSubscriptionActions" class="manage-subscription-actions drawer-subscription-actions hidden">
+            <button id="drawerChangePlan" class="secondary-action" type="button">Change plan</button>
+            <button id="drawerManageSubscription" class="drawer-link-btn" type="button">Cancel subscription</button>
+          </div>
           <button id="accountAction" class="drawer-link-btn">Sign in with Google</button>
         </div>
       </aside>
@@ -141,7 +144,7 @@
           <section id="paywallTrialAlert" class="paywall-trial-alert hidden" aria-live="polite">
             <p class="paywall-trial-alert-label">Trial ended</p>
             <p class="paywall-trial-alert-copy">
-              Come back tomorrow for a new limit, or continue this document today with no daily limits.
+              Come back tomorrow or unlock unlimited listening.
             </p>
           </section>
 

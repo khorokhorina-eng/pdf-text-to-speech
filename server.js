@@ -66,6 +66,25 @@ const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || "";
 const YANDEX_METRIKA_ID = process.env.YANDEX_METRIKA_ID || "108473321";
 const GA4_MEASUREMENT_ID = process.env.GA4_MEASUREMENT_ID || "G-8NDSFDQLWJ";
 const GA4_API_SECRET = process.env.GA4_API_SECRET || "";
+const TTS_LANGUAGE_INSTRUCTIONS = {
+  ar: "Read the text naturally in Arabic.",
+  ja: "Read the text naturally in Japanese.",
+  japanese: "Read the text naturally in Japanese.",
+  zh: "Read the text naturally in Chinese.",
+  "zh-cn": "Read the text naturally in Simplified Chinese.",
+  "zh-tw": "Read the text naturally in Traditional Chinese.",
+  ko: "Read the text naturally in Korean.",
+  en: "Read the text naturally in English.",
+  es: "Read the text naturally in Spanish.",
+  fr: "Read the text naturally in French.",
+  de: "Read the text naturally in German.",
+  it: "Read the text naturally in Italian.",
+  pt: "Read the text naturally in Portuguese.",
+  "pt-br": "Read the text naturally in Brazilian Portuguese.",
+  ru: "Read the text naturally in Russian.",
+  he: "Read the text naturally in Hebrew.",
+  th: "Read the text naturally in Thai.",
+};
 
 const PLAN_DEFINITIONS = [
   {
@@ -1285,6 +1304,19 @@ function formatPeriodEndLabel(value) {
   }).format(date);
 }
 
+function getTtsInstructions(language) {
+  const normalized = String(language || "").trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  const baseLanguage = normalized.split(/[-_]/)[0];
+  return (
+    TTS_LANGUAGE_INSTRUCTIONS[normalized] ||
+    TTS_LANGUAGE_INSTRUCTIONS[baseLanguage] ||
+    `Read the text naturally in ${normalized}.`
+  );
+}
+
 function renderPortalReturnPage({ title, message, ctaLabel = "Back to your document", returnUrl = "" }) {
   const safeReturn = sanitizeExtensionReturnUrl(returnUrl) || getPublicUrl("/paywall/cancel");
   return `<!doctype html>
@@ -2192,6 +2224,10 @@ async function handleTts(req, res, parsedUrl) {
       ? body.text.trim()
       : "";
   const speed = Number(body.speed);
+  const language =
+    typeof body.language === "string" && body.language.trim()
+      ? body.language.trim()
+      : "";
 
   if (!text) {
     sendJson(res, 400, { error: "Text is required." });
@@ -2221,12 +2257,17 @@ async function handleTts(req, res, parsedUrl) {
     return;
   }
 
+  const instructions = getTtsInstructions(language);
   const payload = {
     model: OPENAI_TTS_MODEL,
     voice: OPENAI_TTS_VOICE,
     input: text,
     response_format: "mp3",
   };
+
+  if (instructions) {
+    payload.instructions = instructions;
+  }
 
   if (Number.isFinite(speed)) {
     payload.speed = Math.min(4, Math.max(0.25, speed));

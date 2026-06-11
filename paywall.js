@@ -90,7 +90,7 @@ async function loadAuthState() {
   authSignedInTextEl.textContent = authState.signedIn ? `Signed in as ${authState.email}` : "";
   authMessageEl.textContent = authState.signedIn
     ? ""
-    : "Sign in with Google when you want to unlock unlimited listening.";
+    : "Free plan: 3 free minutes each day. Sign in with Google when you want to unlock unlimited listening.";
   updateButtons();
 }
 

@@ -901,6 +901,17 @@ body.drawer-open .profile-drawer {
   margin-top: 12px;
 }
 
+.drawer-subscription-actions {
+  grid-template-columns: 1fr;
+  margin-top: 0;
+}
+
+.drawer-subscription-actions .secondary-action,
+.drawer-subscription-actions .drawer-link-btn {
+  min-height: 48px;
+  font-size: 15px;
+}
+
 #paywallScreen {
   gap: 8px;
 }

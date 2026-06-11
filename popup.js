@@ -44,6 +44,8 @@ const drawerPlanMetaEl = document.getElementById("drawerPlanMeta");
 const drawerTrialNoticeEl = document.getElementById("drawerTrialNotice");
 const drawerEmailEl = document.getElementById("drawerEmail");
 const drawerUpgradeBtn = document.getElementById("drawerUpgrade");
+const drawerSubscriptionActionsEl = document.getElementById("drawerSubscriptionActions");
+const drawerChangePlanBtn = document.getElementById("drawerChangePlan");
 const drawerManageSubscriptionBtn = document.getElementById("drawerManageSubscription");
 const authToastEl = document.getElementById("authToast");
 const authOverlayEl = document.getElementById("authOverlay");
@@ -117,6 +119,10 @@ let extensionOpenedTracked = false;
 let pageStartChunkMap = [];
 let pendingStartPage = null;
 const pendingAudioRequests = new Map();
+const EXTRACTION_DEBUG_KEY = "pdfExtractionDebug";
+let extractionDebugEnabled = false;
+const extractionDebugPages = new Map();
+const extractionSuspectEventsSent = new Set();
 
 function getLocalTrialDayKey(date = new Date()) {
   const year = date.getFullYear();
@@ -426,6 +432,23 @@ function showAuthSuccessToast() {
   }, 3200);
 }
 
+async function loadExtractionDebugFlag() {
+  try {
+    const result = await readLocalStorage([EXTRACTION_DEBUG_KEY]);
+    extractionDebugEnabled = Boolean(result?.[EXTRACTION_DEBUG_KEY]);
+  } catch (_error) {
+    extractionDebugEnabled = false;
+  }
+
+  window.__setPdfExtractionDebug = async (enabled = true) => {
+    extractionDebugEnabled = Boolean(enabled);
+    await writeLocalStorage({ [EXTRACTION_DEBUG_KEY]: extractionDebugEnabled });
+    return extractionDebugEnabled;
+  };
+  window.__getPdfExtractionDebugPage = (pageNumber) =>
+    extractionDebugPages.get(Number(pageNumber)) || null;
+}
+
 function getPricingPlan(planId) {
   return pricingPlans.find((plan) => plan.planId === planId) || null;
 }
@@ -499,9 +522,9 @@ function getPlanPresentation() {
     name: "Free Listening",
     meta:
       getLiveRemainingSeconds() > 0
-        ? `${formatRemainingSeconds(getLiveRemainingSeconds())} of free listening left today.`
+        ? `3 free minutes each day. ${formatRemainingSeconds(getLiveRemainingSeconds())} left today.`
         : hasKnownTrialRemaining()
-        ? "Today's free listening is over. Come back tomorrow for a new limit, or unlock unlimited listening now."
+        ? "3 free minutes each day. Come back tomorrow or unlock unlimited listening."
         : "Checking today's listening access...",
   };
 }
@@ -571,13 +594,13 @@ function updateUI() {
   const planPresentation = getPlanPresentation();
   drawerPlanNameEl.textContent = planPresentation.name;
   drawerPlanMetaEl.textContent = planPresentation.meta;
-  drawerTrialNoticeEl?.classList.toggle("hidden", !trialAdjustedAfterSignIn);
+  drawerTrialNoticeEl?.classList.toggle("hidden", Boolean(currentSubscription?.active));
   updatePaywallCopy();
   updatePaywallTrialAlert();
   drawerEmailEl.textContent = authState.signedIn ? authState.email : "Guest mode";
   accountActionBtn.textContent = authState.signedIn ? "Sign out" : "Sign in with Google";
   drawerUpgradeBtn.classList.toggle("hidden", currentSubscription?.active);
-  drawerManageSubscriptionBtn?.classList.toggle(
+  drawerSubscriptionActionsEl?.classList.toggle(
     "hidden",
     !(authState.signedIn && currentSubscription?.active)
   );
@@ -834,6 +857,8 @@ function resetPreparedText() {
   state.totalChunks = 0;
   state.currentChunk = 0;
   state.language = "";
+  extractionDebugPages.clear();
+  extractionSuspectEventsSent.clear();
 }
 
 function normalizeText(text) {
@@ -868,6 +893,74 @@ function cleanPdfLines(lines) {
 
   const deduped = normalizedLines.filter((line, index) => line !== normalizedLines[index - 1]);
   return deduped.filter((line) => !shouldIgnorePdfLine(line));
+}
+
+function getExtractionSuspectReason({
+  pageNumber,
+  rawItemsCount,
+  normalizedRowsCount,
+  cleanedRowsCount,
+  joinedTextLength,
+  annotationsCount,
+}) {
+  if (rawItemsCount === 0 && annotationsCount === 0) {
+    return "no_extractable_text";
+  }
+
+  if (
+    annotationsCount === 0 &&
+    joinedTextLength < 80 &&
+    cleanedRowsCount <= 2 &&
+    normalizedRowsCount <= 3 &&
+    rawItemsCount <= 12
+  ) {
+    return pageNumber <= 2 ? "sparse_top_page_content" : "sparse_page_content";
+  }
+
+  return "";
+}
+
+function maybeTrackExtractionSuspect({
+  pageNumber,
+  rawItemsCount,
+  normalizedRowsCount,
+  cleanedRowsCount,
+  joinedTextLength,
+  annotationsCount,
+  pageWidth,
+  usedColumnSplit,
+}) {
+  const reason = getExtractionSuspectReason({
+    pageNumber,
+    rawItemsCount,
+    normalizedRowsCount,
+    cleanedRowsCount,
+    joinedTextLength,
+    annotationsCount,
+  });
+  if (!reason) {
+    return;
+  }
+
+  const dedupeKey = `${currentPdfId || "unknown"}:${pageNumber}:${reason}`;
+  if (extractionSuspectEventsSent.has(dedupeKey)) {
+    return;
+  }
+  extractionSuspectEventsSent.add(dedupeKey);
+
+  void trackAnalyticsEvent("pdf_page_extraction_suspect", {
+    reason,
+    page_number: pageNumber,
+    raw_items_count: rawItemsCount,
+    normalized_rows_count: normalizedRowsCount,
+    cleaned_rows_count: cleanedRowsCount,
+    extracted_text_length: joinedTextLength,
+    annotations_count: annotationsCount,
+    page_width: Math.round(pageWidth || 0),
+    used_column_split: usedColumnSplit,
+    signed_in: authState.signedIn,
+    total_pages: state.totalPages || 0,
+  });
 }
 
 function splitIntoSentences(text) {
@@ -980,14 +1073,46 @@ function buildChunks(pages, options = {}) {
   return chunks;
 }
 
+function detectLanguageFromScript(text) {
+  const sample = String(text || "");
+  if (!sample) {
+    return "";
+  }
+  if (/[ぁ-ゖ゠-ヿ]/u.test(sample)) {
+    return "ja";
+  }
+  if (/[가-힣]/u.test(sample)) {
+    return "ko";
+  }
+  if (/[؀-ۿ]/u.test(sample)) {
+    return "ar";
+  }
+  if (/[א-ת]/u.test(sample)) {
+    return "he";
+  }
+  if (/[ก-๙]/u.test(sample)) {
+    return "th";
+  }
+  if (/[一-鿿]/u.test(sample)) {
+    return "zh";
+  }
+  return "";
+}
+
 function detectLanguageFromText(text) {
   return new Promise((resolve) => {
+    const sample = String(text || "");
+    const scriptLanguage = detectLanguageFromScript(sample);
+    if (scriptLanguage) {
+      resolve(scriptLanguage);
+      return;
+    }
     if (!chrome?.i18n?.detectLanguage) {
       resolve("");
       return;
     }
 
-    chrome.i18n.detectLanguage(text, (result) => {
+    chrome.i18n.detectLanguage(sample, (result) => {
       if (chrome.runtime.lastError || !result?.languages?.length) {
         resolve("");
         return;
@@ -996,7 +1121,11 @@ function detectLanguageFromText(text) {
       const best = result.languages
         .slice()
         .sort((a, b) => b.percentage - a.percentage)[0];
-      resolve(best?.language || "");
+      if (best?.language) {
+        resolve(best.language);
+        return;
+      }
+      resolve(detectLanguageFromScript(sample));
     });
   });
 }
@@ -1699,10 +1828,10 @@ function updatePaywallCopy() {
     authMessageEl.textContent = authState.signedIn
       ? ""
       : !currentSubscription?.active && getLiveRemainingSeconds() <= 0
-      ? `Come back tomorrow for a new limit, or sign in to continue ${currentPdfLabel} today.`
+      ? "Come back tomorrow or unlock unlimited listening."
       : hasCurrentPdf
       ? `Sign in before checkout to continue ${currentPdfLabel} without daily limits.`
-      : "Sign in before checkout to continue listening without daily limits.";
+      : "Free plan: 3 free minutes each day. Sign in before checkout to continue listening without daily limits.";
   }
 }
 
@@ -1877,7 +2006,7 @@ async function loadSubscriptionStatus() {
       setPaywallStatus(
         authState.signedIn
           ? "Choose a plan to continue."
-          : "Sign in before checkout to keep unlimited listening attached to your account."
+          : "Free plan: 3 free minutes each day. Sign in before checkout to keep unlimited listening attached to your account."
       );
     }
     updatePaywallCopy();
@@ -1902,7 +2031,7 @@ function openPaywall(source = "unknown") {
     has_pdf: Boolean(currentFileBuffer),
   });
   if (!currentSubscription?.active && getLiveRemainingSeconds() <= 0) {
-    setPaywallStatus("Today's free listening is over. Come back tomorrow for a new limit, or continue listening today.");
+    setPaywallStatus("Today's free listening is over. Come back tomorrow or unlock unlimited listening.");
   }
   void loadAuthState().then(() => {
     loadSubscriptionStatus();
@@ -1987,6 +2116,9 @@ async function openBillingPortal() {
     drawerManageSubscriptionBtn.disabled = true;
     drawerManageSubscriptionBtn.textContent = "Opening billing...";
   }
+  if (drawerChangePlanBtn) {
+    drawerChangePlanBtn.disabled = true;
+  }
   if (changePlanBtn) {
     changePlanBtn.disabled = true;
   }
@@ -2010,6 +2142,9 @@ async function openBillingPortal() {
       drawerManageSubscriptionBtn.disabled = false;
       drawerManageSubscriptionBtn.textContent = "Cancel subscription";
     }
+    if (drawerChangePlanBtn) {
+      drawerChangePlanBtn.disabled = false;
+    }
     if (changePlanBtn) {
       changePlanBtn.disabled = false;
     }
@@ -2025,7 +2160,7 @@ function formatRemainingSeconds(seconds) {
 }
 
 function paywallReachedMessage() {
-  return "Today's free listening is over. Your free limit will reset tomorrow, or you can unlock unlimited listening now.";
+  return "Today's free listening is over. Come back tomorrow or unlock unlimited listening.";
 }
 
 async function exhaustPlaybackQuota(token = playbackToken) {
@@ -2126,12 +2261,6 @@ async function enforcePaywallBeforePlayback() {
     showPaywallLimitReached();
     return { allowed: false, remainingSeconds: 0 };
   }
-  if (!currentSubscription?.active && remainingSeconds <= minFreePlaybackStartSeconds) {
-    lastKnownRemainingSeconds = 0;
-    sessionRemainingSeconds = 0;
-    showPaywallLimitReached();
-    return { allowed: false, remainingSeconds: 0 };
-  }
   return { allowed: true, remainingSeconds };
 }
 
@@ -2188,8 +2317,11 @@ function appendPreparedPage(pageText, pageNumber) {
 async function extractPageText(pdf, pageNumber) {
   const page = await pdf.getPage(pageNumber);
   const textContent = await page.getTextContent();
+  const annotations = extractionDebugEnabled
+    ? await page.getAnnotations().catch(() => [])
+    : [];
   const viewport = page.getViewport({ scale: 1 });
-  const positionedItems = textContent.items
+  const rawItems = textContent.items
     .map((item) => {
       const text = normalizeText(item?.str || "");
       const x = Number(item?.transform?.[4]);
@@ -2203,7 +2335,9 @@ async function extractPageText(pdf, pageNumber) {
         y: Number.isFinite(y) ? y : 0,
       };
     })
-    .filter(Boolean)
+    .filter(Boolean);
+
+  const positionedItems = rawItems
     .sort((a, b) => {
       if (Math.abs(b.y - a.y) > 3) {
         return b.y - a.y;
@@ -2271,7 +2405,86 @@ async function extractPageText(pdf, pageNumber) {
       ? [...leftRows, ...rightRows]
       : normalizedRows.map((row) => row.text);
 
-  return cleanPdfLines(orderedRows).join(" ");
+  const cleanedRows = cleanPdfLines(orderedRows);
+  const joinedText = cleanedRows.join(" ");
+  const normalizedAnnotations = annotations
+    .map((annotation, index) => {
+      const candidateText = normalizeText(
+        [
+          annotation?.fieldValue,
+          annotation?.buttonValue,
+          annotation?.textContent,
+          annotation?.contents,
+          annotation?.alternativeText,
+          annotation?.titleObj?.str,
+          annotation?.fieldName,
+        ]
+          .filter(Boolean)
+          .join(" ")
+      );
+      return {
+        index,
+        subtype: annotation?.subtype || "",
+        fieldType: annotation?.fieldType || "",
+        fieldName: annotation?.fieldName || "",
+        text: candidateText,
+        raw: annotation,
+      };
+    })
+    .filter((entry) => entry.text);
+  const usedColumnSplit = leftRows.length >= 3 && rightRows.length >= 3;
+
+  maybeTrackExtractionSuspect({
+    pageNumber,
+    rawItemsCount: rawItems.length,
+    normalizedRowsCount: normalizedRows.length,
+    cleanedRowsCount: cleanedRows.length,
+    joinedTextLength: joinedText.length,
+    annotationsCount: normalizedAnnotations.length,
+    pageWidth,
+    usedColumnSplit,
+  });
+
+  if (extractionDebugEnabled) {
+    const debugPayload = {
+      pageNumber,
+      pageWidth,
+      rawItems,
+      annotations: normalizedAnnotations,
+      normalizedRows,
+      leftRows,
+      rightRows,
+      orderedRows,
+      cleanedRows,
+      joinedText,
+      usedColumnSplit,
+    };
+    extractionDebugPages.set(pageNumber, debugPayload);
+    console.groupCollapsed(`[PDF extraction] page ${pageNumber}`);
+    console.log(debugPayload);
+    console.table(
+      normalizedRows.map((row, index) => ({
+        index,
+        minX: row.minX,
+        maxX: row.maxX,
+        text: row.text,
+      }))
+    );
+    if (normalizedAnnotations.length) {
+      console.table(
+        normalizedAnnotations.map((annotation) => ({
+          index: annotation.index,
+          subtype: annotation.subtype,
+          fieldType: annotation.fieldType,
+          fieldName: annotation.fieldName,
+          text: annotation.text,
+        }))
+      );
+    }
+    console.groupEnd();
+  }
+
+  return joinedText;
 }
 
 async function preparePdfPages(pdf, startPage, endPage, runId, onChunkReady) {
@@ -2926,7 +3139,7 @@ profileTriggerBtn.addEventListener("click", () => {
   drawerPlanNameEl.textContent = "Checking access...";
   drawerPlanMetaEl.textContent = "Refreshing your listening access...";
   drawerUpgradeBtn.classList.add("hidden");
-  drawerManageSubscriptionBtn?.classList.add("hidden");
+  drawerSubscriptionActionsEl?.classList.add("hidden");
   openDrawer();
   void loadAuthState().then(() => loadSubscriptionStatus());
 });
@@ -2942,6 +3155,10 @@ drawerBackdropEl.addEventListener("click", () => {
 drawerUpgradeBtn.addEventListener("click", () => {
   void trackAnalyticsEvent("upgrade_clicked", { source: "drawer_upgrade" });
   openPaywall("drawer_upgrade");
+});
+
+drawerChangePlanBtn?.addEventListener("click", () => {
+  void openBillingPortal();
 });
 
 drawerManageSubscriptionBtn?.addEventListener("click", () => {
@@ -3005,6 +3222,7 @@ window.addEventListener("focus", () => {
 setActiveScreen("reader");
 updateUI();
 void loadLibraryState()
+  .then(() => loadExtractionDebugFlag())
   .then(() => loadPricingPlans())
   .then(() => loadAuthState())
   .then(() => refreshQuotaSnapshot())
