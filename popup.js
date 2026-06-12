@@ -83,6 +83,7 @@ let currentChunkIndex = 0;
 let detectedLanguage = "";
 let currentAudio = null;
 let currentAudioUrl = "";
+let pendingPlaybackOffsetSeconds = 0;
 let playbackToken = 0;
 let paywallStopTimer = null;
 let playbackUiTimer = null;
@@ -134,6 +135,8 @@ function getLocalTrialDayKey(date = new Date()) {
 const INITIAL_PREPARED_PAGES = 1;
 const FIRST_CHUNK_MAX_LENGTH = 24;
 const DEFAULT_CHUNK_MAX_LENGTH = 1100;
+const STABLE_TTS_CHUNK_MAX_LENGTH = 420;
+const STABLE_TTS_MAX_LINES_PER_CHUNK = 3;
 
 const PLAN_META = {
   monthly: {
@@ -547,7 +550,7 @@ function updateUI() {
   } else if (state.status === "reading") {
     playBtn.textContent = "Pause";
   } else if (state.status === "paused") {
-    playBtn.textContent = "Resume";
+    playBtn.textContent = "Play";
   } else {
     playBtn.textContent = "Start Listening";
   }
@@ -605,7 +608,7 @@ function updateUI() {
     !(authState.signedIn && currentSubscription?.active)
   );
   const hasActiveSubscription = Boolean(currentSubscription?.active);
-  authPanelEl?.classList.toggle("hidden", hasActiveSubscription);
+  authPanelEl?.classList.add("hidden");
   activeSubscriptionPanelEl?.classList.toggle("hidden", !hasActiveSubscription);
   monthlyPlanCard?.classList.toggle("hidden", hasActiveSubscription);
   annualPlanCard?.classList.toggle("hidden", hasActiveSubscription);
@@ -865,6 +868,113 @@ function normalizeText(text) {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function getMedian(values) {
+  if (!Array.isArray(values) || !values.length) {
+    return 0;
+  }
+  const sorted = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  if (!sorted.length) {
+    return 0;
+  }
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
+}
+
+function getAverage(values) {
+  if (!Array.isArray(values) || !values.length) {
+    return 0;
+  }
+  const numeric = values.map((value) => Number(value)).filter((value) => Number.isFinite(value));
+  if (!numeric.length) {
+    return 0;
+  }
+  return numeric.reduce((sum, value) => sum + value, 0) / numeric.length;
+}
+
+function countVerticalRowOverlaps(leftRows, rightRows, tolerance = 8) {
+  if (!Array.isArray(leftRows) || !Array.isArray(rightRows) || !leftRows.length || !rightRows.length) {
+    return 0;
+  }
+  let overlaps = 0;
+  rightRows.forEach((rightRow) => {
+    const hasOverlap = leftRows.some((leftRow) => Math.abs(Number(leftRow.y) - Number(rightRow.y)) <= tolerance);
+    if (hasOverlap) {
+      overlaps += 1;
+    }
+  });
+  return overlaps;
+}
+
+function finalizeRowText(text) {
+  const normalizedText = normalizeText(
+    text
+      .replace(/\s+([,.;:!?%])/g, "$1")
+      .replace(/([([{])\s+/g, "$1")
+      .replace(/\s+([)\]}])/g, "$1")
+      .replace(/\s*([—–-])\s*/g, " $1 ")
+  );
+  const sparseWhitespace = (normalizedText.match(/\s/g) || []).length <= 2;
+  if (!sparseWhitespace) {
+    return normalizedText;
+  }
+
+  return normalizeText(
+    normalizedText
+      .replace(/([,\.;:!?])([^\s\d])/g, "$1 $2")
+      .replace(/([\p{Ll}])([\p{Lu}])/gu, "$1 $2")
+      .replace(/([\p{L}])(\d)/gu, "$1 $2")
+      .replace(/(\d)([\p{L}])/gu, "$1 $2")
+  );
+}
+
+function buildRowText(sortedRow) {
+  if (!Array.isArray(sortedRow) || !sortedRow.length) {
+    return "";
+  }
+
+  if (sortedRow.length === 1) {
+    return finalizeRowText(sortedRow[0]?.text || "");
+  }
+
+  const tokenTexts = sortedRow.map((entry) => String(entry?.text || ""));
+  const singleCharLikeCount = tokenTexts.filter((text) => text.length <= 1).length;
+  const looksCharacterSplit = singleCharLikeCount / tokenTexts.length >= 0.7;
+  const gaps = [];
+  for (let index = 1; index < sortedRow.length; index += 1) {
+    const gap = Number(sortedRow[index]?.x) - Number(sortedRow[index - 1]?.x);
+    if (Number.isFinite(gap) && gap > 0) {
+      gaps.push(gap);
+    }
+  }
+
+  const baselineGap = getMedian(gaps);
+  if (!Number.isFinite(baselineGap) || baselineGap <= 0) {
+    return finalizeRowText(tokenTexts.join(looksCharacterSplit ? "" : " "));
+  }
+
+  const wordGapThreshold = looksCharacterSplit
+    ? Math.max(3, baselineGap * 1.45)
+    : Math.max(2, baselineGap * 1.12);
+  let text = tokenTexts[0];
+
+  for (let index = 1; index < sortedRow.length; index += 1) {
+    const currentText = tokenTexts[index];
+    const gap = Number(sortedRow[index]?.x) - Number(sortedRow[index - 1]?.x);
+    if (Number.isFinite(gap) && gap > wordGapThreshold) {
+      text += ` ${currentText}`;
+    } else {
+      text += currentText;
+    }
+  }
+
+  return finalizeRowText(text);
+}
+
 function shouldIgnorePdfLine(line) {
   const normalized = normalizeText(line);
   if (!normalized) {
@@ -891,8 +1001,11 @@ function cleanPdfLines(lines) {
     return [];
   }
 
-  const deduped = normalizedLines.filter((line, index) => line !== normalizedLines[index - 1]);
-  return deduped.filter((line) => !shouldIgnorePdfLine(line));
+  return normalizedLines.filter((line, index) => line !== normalizedLines[index - 1]);
+}
+
+function dedupeConsecutiveLines(lines) {
+  return lines.filter((line, index) => line !== lines[index - 1]);
 }
 
 function getExtractionSuspectReason({
@@ -968,6 +1081,14 @@ function splitIntoSentences(text) {
   return matches ? matches.map((sentence) => sentence.trim()).filter(Boolean) : [];
 }
 
+function normalizeLineForSpeech(text) {
+  const normalized = normalizeText(text);
+  if (!normalized) {
+    return "";
+  }
+  return /[.!?…:;"»)]$/u.test(normalized) ? normalized : `${normalized}.`;
+}
+
 function splitLongUnit(unit, maxLength) {
   const normalized = normalizeText(unit);
   if (!normalized) {
@@ -1025,43 +1146,54 @@ function buildChunks(pages, options = {}) {
     chunks.push(normalizedValue);
   }
 
-  pages.forEach((pageText) => {
-    const normalized = normalizeText(pageText);
-    if (!normalized) {
+  pages.forEach((pageEntry) => {
+    const rowUnits = (Array.isArray(pageEntry) ? pageEntry : [pageEntry])
+      .map((unit) => normalizeText(unit))
+      .filter(Boolean);
+    if (!rowUnits.length) {
       return;
     }
 
-    const parts = splitIntoSentences(normalized);
-    const firstLimit =
-      useSmallFirstChunk && chunks.length === 0
-        ? FIRST_CHUNK_MAX_LENGTH
-        : DEFAULT_CHUNK_MAX_LENGTH;
-    const units = (parts.length ? parts : [normalized]).flatMap((unit, index) =>
-      splitLongUnit(
-        unit,
-        useSmallFirstChunk && chunks.length === 0 && index === 0
-          ? firstLimit
-          : DEFAULT_CHUNK_MAX_LENGTH
-      )
-    );
+    const units = rowUnits.flatMap((rowUnit, rowIndex) => {
+      const speechLine = normalizeLineForSpeech(rowUnit);
+      if (!speechLine) {
+        return [];
+      }
+      const firstLimit =
+        useSmallFirstChunk && chunks.length === 0 && rowIndex === 0
+          ? FIRST_CHUNK_MAX_LENGTH
+          : Math.min(DEFAULT_CHUNK_MAX_LENGTH, STABLE_TTS_CHUNK_MAX_LENGTH);
+      return splitLongUnit(speechLine, firstLimit).map((part) => ({
+        text: part,
+        lineCost: 1,
+      }));
+    });
     let current = "";
+    let currentLineCount = 0;
 
     units.forEach((unit) => {
       const maxLength =
         useSmallFirstChunk && chunks.length === 0 && !current
           ? FIRST_CHUNK_MAX_LENGTH
-          : DEFAULT_CHUNK_MAX_LENGTH;
-      const candidate = current ? `${current} ${unit}` : unit;
-      if (candidate.length > maxLength) {
+          : Math.min(DEFAULT_CHUNK_MAX_LENGTH, STABLE_TTS_CHUNK_MAX_LENGTH);
+      const candidate = current ? `${current} ${unit.text}` : unit.text;
+      const nextLineCount = currentLineCount + (unit.lineCost || 0);
+      if (
+        candidate.length > maxLength ||
+        (current && nextLineCount > STABLE_TTS_MAX_LINES_PER_CHUNK)
+      ) {
         if (current) {
           pushChunk(current);
-          current = unit;
+          current = unit.text;
+          currentLineCount = unit.lineCost || 1;
         } else {
-          pushChunk(unit);
+          pushChunk(unit.text);
           current = "";
+          currentLineCount = 0;
         }
       } else {
         current = candidate;
+        currentLineCount = nextLineCount;
       }
     });
 
@@ -1541,6 +1673,10 @@ function updateLibraryUI() {
   const currentResume = getCurrentResume();
   const latestResume = getLatestResumeEntry();
   const latestRecent = getLatestRecentEntry();
+  const latestRecentResume =
+    latestRecent && libraryState.resumes?.[latestRecent.id]
+      ? libraryState.resumes[latestRecent.id]
+      : null;
   const bookmarks = getCurrentBookmarks();
   const bookmarkedRecentEntries = getRecentEntriesWithBookmarks(currentPdfId);
 
@@ -1557,6 +1693,8 @@ function updateLibraryUI() {
     const sourceResume =
       currentResume && currentPdfId
         ? { id: currentPdfId, name: state.fileName, resume: currentResume }
+        : !currentPdfId && latestRecent && latestRecentResume
+        ? { id: latestRecent.id, name: latestRecent.name, resume: latestRecentResume }
         : latestResume;
     const sourceRecent = !sourceResume && !currentPdfId ? latestRecent : null;
     resumePlaybackBtn.dataset.resumeId = sourceResume?.id || sourceRecent?.id || "";
@@ -1564,14 +1702,14 @@ function updateLibraryUI() {
       resumeMetaEl.textContent = `${sourceResume.name || "Last PDF"} · ${formatSectionLabel(
         sourceResume.resume.chunkIndex || 0
       )}`;
-      resumePlaybackBtn.textContent = "Resume";
+      resumePlaybackBtn.textContent = "Play";
     } else {
       resumeMetaEl.textContent = sourceRecent?.name || "Open your last PDF again.";
       resumePlaybackBtn.textContent = "Open PDF";
     }
   } else {
     resumePlaybackBtn.dataset.resumeId = "";
-    resumePlaybackBtn.textContent = "Resume";
+    resumePlaybackBtn.textContent = "Play";
   }
 
   const showBookmarks = Boolean(currentPdfId) || bookmarkedRecentEntries.length > 0;
@@ -1636,12 +1774,16 @@ async function removeBookmark(index, pdfId = currentPdfId) {
   await persistLibraryState({ skipUi: true });
 }
 
-async function persistResumePosition(chunkIndex = currentChunkIndex) {
+async function persistResumePosition(
+  chunkIndex = currentChunkIndex,
+  offsetSeconds = pendingPlaybackOffsetSeconds
+) {
   if (!currentPdfId) {
     return;
   }
   libraryState.resumes[currentPdfId] = {
     chunkIndex: Math.max(0, Number(chunkIndex) || 0),
+    offsetSeconds: Math.max(0, Number(offsetSeconds) || 0),
     totalChunks: state.totalChunks,
     updatedAt: Date.now(),
   };
@@ -1654,6 +1796,7 @@ async function clearResumePosition() {
   }
   libraryState.resumes[currentPdfId] = {
     chunkIndex: 0,
+    offsetSeconds: 0,
     totalChunks: state.totalChunks,
     updatedAt: Date.now(),
   };
@@ -1801,6 +1944,7 @@ async function persistLocalTrialFloor(remainingSeconds) {
 function setPaywallStatus(text, ok = false) {
   paywallStatusEl.textContent = text;
   paywallStatusEl.style.color = ok ? "#24553a" : "#6f665c";
+  paywallStatusEl.classList.toggle("hidden", !String(text || "").trim());
 }
 
 function updatePaywallTrialAlert() {
@@ -1825,20 +1969,17 @@ function updatePaywallCopy() {
       : "Unlock no daily limits for this PDF and every document after it.";
   }
   if (authMessageEl) {
-    authMessageEl.textContent = authState.signedIn
-      ? ""
-      : !currentSubscription?.active && getLiveRemainingSeconds() <= 0
-      ? "Come back tomorrow or unlock unlimited listening."
-      : hasCurrentPdf
-      ? `Sign in before checkout to continue ${currentPdfLabel} without daily limits.`
-      : "Free plan: 3 free minutes each day. Sign in before checkout to continue listening without daily limits.";
+    authMessageEl.textContent = "";
   }
 }
 
 function updateAuthUI() {
-  authPanelEl?.classList.toggle("hidden", authState.signedIn);
-  authCopyEl.classList.toggle("hidden", authState.signedIn);
-  authGoogleBtn.classList.toggle("hidden", authState.signedIn);
+  authPanelEl?.classList.add("hidden");
+  authCopyEl?.classList.add("hidden");
+  authGoogleBtn?.classList.add("hidden");
+  if (authState.signedIn && currentSubscription?.active) {
+    setPaywallStatus("");
+  }
   updatePaywallCopy();
   updatePaywallTrialAlert();
   updateUI();
@@ -1952,9 +2093,13 @@ async function signInWithGoogle(targetScreen = "drawer", source = "unknown") {
       ? getLiveRemainingSeconds()
       : -1,
   });
-  authGoogleBtn.disabled = true;
+  if (authGoogleBtn) {
+    authGoogleBtn.disabled = true;
+  }
   accountActionBtn.disabled = true;
-  authGoogleBtn.textContent = "Opening Google...";
+  if (authGoogleBtn) {
+    authGoogleBtn.textContent = "Opening Google...";
+  }
   accountActionBtn.textContent = "Opening Google...";
   setAuthenticating(true);
   closeDrawer();
@@ -1969,9 +2114,13 @@ async function signInWithGoogle(targetScreen = "drawer", source = "unknown") {
     setAuthenticating(false);
     setPaywallStatus(error.message || "Unable to start Google sign-in.");
   } finally {
-    authGoogleBtn.disabled = false;
+    if (authGoogleBtn) {
+      authGoogleBtn.disabled = false;
+    }
     accountActionBtn.disabled = false;
-    authGoogleBtn.textContent = "Continue with Google";
+    if (authGoogleBtn) {
+      authGoogleBtn.textContent = "Continue with Google";
+    }
     accountActionBtn.textContent = authState.signedIn ? "Sign out" : "Sign in with Google";
   }
 }
@@ -2001,12 +2150,12 @@ async function loadSubscriptionStatus() {
       if (currentPlanId) {
         selectedPlanId = currentPlanId;
       }
-      setPaywallStatus("Subscription active on this device.", true);
+      setPaywallStatus("");
     } else {
       setPaywallStatus(
         authState.signedIn
           ? "Choose a plan to continue."
-          : "Free plan: 3 free minutes each day. Sign in before checkout to keep unlimited listening attached to your account."
+          : "Free plan: 3 free minutes each day. Choose a plan and sign in before checkout."
       );
     }
     updatePaywallCopy();
@@ -2372,7 +2521,8 @@ async function extractPageText(pdf, pageNumber) {
       return {
         minX: sortedRow[0]?.x || 0,
         maxX: sortedRow[sortedRow.length - 1]?.x || 0,
-        text: sortedRow.map((entry) => entry.text).join(" "),
+        y: getAverage(sortedRow.map((entry) => entry.y)),
+        text: buildRowText(sortedRow),
       };
     })
     .filter((row) => normalizeText(row.text));
@@ -2388,16 +2538,42 @@ async function extractPageText(pdf, pageNumber) {
 
   if (maxStart - minStart > splitThreshold) {
     const splitX = (minStart + maxStart) / 2;
+    const provisionalLeftRows = [];
+    const provisionalRightRows = [];
+
     normalizedRows.forEach((row) => {
-      const rowMidpoint = (row.minX + row.maxX) / 2;
-      if (rowMidpoint < splitX - gutterThreshold / 2) {
-        leftRows.push(row.text);
-      } else if (rowMidpoint > splitX + gutterThreshold / 2) {
-        rightRows.push(row.text);
+      if (row.minX < splitX - gutterThreshold / 2) {
+        provisionalLeftRows.push(row);
+      } else if (row.minX > splitX + gutterThreshold / 2) {
+        provisionalRightRows.push(row);
       } else {
-        leftRows.push(row.text);
+        provisionalLeftRows.push(row);
       }
     });
+
+    const totalClassifiedRows = provisionalLeftRows.length + provisionalRightRows.length;
+    const leftRatio = totalClassifiedRows ? provisionalLeftRows.length / totalClassifiedRows : 0;
+    const rightRatio = totalClassifiedRows ? provisionalRightRows.length / totalClassifiedRows : 0;
+    const leftAverageStart = getAverage(provisionalLeftRows.map((row) => row.minX));
+    const rightAverageStart = getAverage(provisionalRightRows.map((row) => row.minX));
+    const clusterGap = Math.abs(rightAverageStart - leftAverageStart);
+    const verticalOverlaps = countVerticalRowOverlaps(
+      provisionalLeftRows,
+      provisionalRightRows,
+      8
+    );
+    const hasMeaningfulSplit =
+      provisionalLeftRows.length >= 3 &&
+      provisionalRightRows.length >= 3 &&
+      leftRatio >= 0.25 &&
+      rightRatio >= 0.25 &&
+      clusterGap > gutterThreshold &&
+      verticalOverlaps >= 2;
+
+    if (hasMeaningfulSplit) {
+      leftRows.push(...provisionalLeftRows.map((row) => row.text));
+      rightRows.push(...provisionalRightRows.map((row) => row.text));
+    }
   }
 
   const orderedRows =
@@ -2406,7 +2582,6 @@ async function extractPageText(pdf, pageNumber) {
       : normalizedRows.map((row) => row.text);
 
   const cleanedRows = cleanPdfLines(orderedRows);
-  const joinedText = cleanedRows.join(" ");
   const normalizedAnnotations = annotations
     .map((annotation, index) => {
       const candidateText = normalizeText(
@@ -2433,12 +2608,22 @@ async function extractPageText(pdf, pageNumber) {
     })
     .filter((entry) => entry.text);
   const usedColumnSplit = leftRows.length >= 3 && rightRows.length >= 3;
+  const conservativeRows = dedupeConsecutiveLines(
+    normalizedRows.map((row) => normalizeText(row.text)).filter(Boolean)
+  );
+  const shouldFallbackToConservativeRows =
+    !usedColumnSplit &&
+    normalizedRows.length >= 6 &&
+    cleanedRows.length >= 1 &&
+    cleanedRows.length / normalizedRows.length < 0.8;
+  const finalRows = shouldFallbackToConservativeRows ? conservativeRows : cleanedRows;
+  const joinedText = finalRows.join("\n");
 
   maybeTrackExtractionSuspect({
     pageNumber,
     rawItemsCount: rawItems.length,
     normalizedRowsCount: normalizedRows.length,
-    cleanedRowsCount: cleanedRows.length,
+    cleanedRowsCount: finalRows.length,
     joinedTextLength: joinedText.length,
     annotationsCount: normalizedAnnotations.length,
     pageWidth,
@@ -2455,7 +2640,10 @@ async function extractPageText(pdf, pageNumber) {
       leftRows,
       rightRows,
       orderedRows,
-      cleanedRows,
+      cleanedRows: finalRows,
+      preFallbackCleanedRows: cleanedRows,
+      conservativeRows,
+      usedConservativeFallback: shouldFallbackToConservativeRows,
       joinedText,
       usedColumnSplit,
     };
@@ -2484,7 +2672,7 @@ async function extractPageText(pdf, pageNumber) {
     console.groupEnd();
   }
 
-  return joinedText;
+  return cleanedRows;
 }
 
 async function preparePdfPages(pdf, startPage, endPage, runId, onChunkReady) {
@@ -2617,6 +2805,13 @@ async function prepareSelectedFile(file) {
     });
     currentPdfId = pdfId;
     void refreshQuotaSnapshot();
+    updateRecentEntry({
+      id: pdfId,
+      name: file.name || "PDF document",
+      sizeKb: Math.max(1, Math.round((file.size || 0) / 1024)),
+      totalPages: 0,
+      totalChunks: 0,
+    });
     const saveDocumentPromise = savePdfDocument({
       id: pdfId,
       name: file.name || "PDF document",
@@ -2625,11 +2820,14 @@ async function prepareSelectedFile(file) {
       lastOpenedAt: Date.now(),
     });
     const openInBrowserPromise = openPdfInBrowserTab(file).catch(() => null);
+    await Promise.allSettled([
+      saveDocumentPromise,
+      persistLibraryState({ skipUi: true }),
+    ]);
     isPreparingText = true;
     preparationComplete = false;
     currentFileBuffer = buffer;
     const pdf = await openPdfDocument(currentFileBuffer);
-    void saveDocumentPromise.catch(() => null);
     void openInBrowserPromise;
     if (runId !== activePreparationRunId) {
       return;
@@ -2643,6 +2841,7 @@ async function prepareSelectedFile(file) {
       totalPages: pdf.numPages,
       totalChunks: 0,
     });
+    await persistLibraryState({ skipUi: true });
     await clearResumePosition();
     void trackAnalyticsEvent("pdf_selected", {
       page_count: pdf.numPages,
@@ -2732,6 +2931,14 @@ async function openRecentPdf(id) {
   state.fileName = record.name || "PDF document";
   setStatus("loading", "Loading your PDF...");
   void refreshQuotaSnapshot();
+  updateRecentEntry({
+    id,
+    name: record.name || "PDF document",
+    sizeKb: record.sizeKb || 0,
+    totalPages: record.totalPages || 0,
+    totalChunks: record.totalChunks || 0,
+  });
+  await persistLibraryState({ skipUi: true });
 
   try {
     void openPdfBlobInBrowserTab(record.buffer).catch(() => null);
@@ -2751,6 +2958,7 @@ async function openRecentPdf(id) {
       totalPages: pdf.numPages,
       totalChunks: 0,
     });
+    await persistLibraryState({ skipUi: true });
 
     const initialPagesEnd = Math.min(INITIAL_PREPARED_PAGES, pdf.numPages);
     const initialResult = await preparePdfPages(pdf, 1, initialPagesEnd, runId, () => {
@@ -2818,8 +3026,9 @@ async function handleAudioEnded(token) {
     paywallStopTimer = null;
   }
   commitPlaybackUsageInBackground(token);
+  pendingPlaybackOffsetSeconds = 0;
   currentChunkIndex += 1;
-  await persistResumePosition(currentChunkIndex);
+  await persistResumePosition(currentChunkIndex, 0);
 
   if (currentChunkIndex >= textChunks.length) {
     await waitForPreparedChunks(token);
@@ -2889,10 +3098,32 @@ async function speakCurrentChunk(token = playbackToken) {
 
   cleanupCurrentAudio();
   currentAudio = new Audio();
+  const resumeOffsetSeconds = Math.max(0, Number(pendingPlaybackOffsetSeconds) || 0);
   const payload = resolvedPayload.payload;
   currentAudioUrl = resolvedPayload.objectUrl || buildAudioObjectUrl(payload);
   currentAudio.src = currentAudioUrl;
   currentAudio.playbackRate = getEffectiveSpeed(state.speed);
+  if (resumeOffsetSeconds > 0) {
+    currentAudio.addEventListener(
+      "loadedmetadata",
+      () => {
+        if (!currentAudio) {
+          return;
+        }
+        try {
+          currentAudio.currentTime = Math.min(
+            resumeOffsetSeconds,
+            Number.isFinite(currentAudio.duration) && currentAudio.duration > 0
+              ? Math.max(0, currentAudio.duration - 0.05)
+              : resumeOffsetSeconds
+          );
+        } catch (_error) {
+          // Best effort only.
+        }
+      },
+      { once: true }
+    );
+  }
   currentAudio.onended = () => {
     handleAudioEnded(token);
   };
@@ -2907,6 +3138,7 @@ async function speakCurrentChunk(token = playbackToken) {
 
   try {
     await currentAudio.play();
+    pendingPlaybackOffsetSeconds = 0;
     lastActivePlaybackTickMs = Date.now();
     updateReadingStatus();
     startPlaybackUiTimer();
@@ -2935,6 +3167,14 @@ async function startPlayback() {
 
   if (state.status === "finished") {
     currentChunkIndex = 0;
+    pendingPlaybackOffsetSeconds = 0;
+  } else if (state.status === "paused" && !currentAudio) {
+    const resume = getCurrentResume();
+    if (resume) {
+      currentChunkIndex = Math.max(0, Number(resume.chunkIndex) || 0);
+      pendingPlaybackOffsetSeconds = Math.max(0, Number(resume.offsetSeconds) || 0);
+      state.currentChunk = currentChunkIndex;
+    }
   }
 
   pendingStartPlayback = false;
@@ -2995,18 +3235,20 @@ async function pausePlayback() {
   }
   stopPlaybackUiTimer();
   currentAudio.pause();
+  pendingPlaybackOffsetSeconds = Math.max(0, Number(currentAudio.currentTime) || 0);
   await commitPlaybackUsage().catch(() => null);
-  await persistResumePosition(currentChunkIndex);
+  await persistResumePosition(currentChunkIndex, pendingPlaybackOffsetSeconds);
   setStatus("paused", state.fileName ? `Paused ${state.fileName}` : "Paused");
 }
 
 async function stopPlayback() {
   playbackToken += 1;
   await commitPlaybackUsage().catch(() => null);
-  await persistResumePosition(currentChunkIndex);
+  await persistResumePosition(currentChunkIndex, 0);
   cleanupCurrentAudio();
   clearPrefetch();
   resetSessionQuotaTracking();
+  pendingPlaybackOffsetSeconds = 0;
   currentChunkIndex = 0;
   state.currentChunk = 0;
   if (currentFileBuffer) {
@@ -3043,6 +3285,7 @@ resumePlaybackBtn?.addEventListener("click", () => {
     return;
   }
   currentChunkIndex = Math.max(0, Number(resume.chunkIndex) || 0);
+  pendingPlaybackOffsetSeconds = Math.max(0, Number(resume.offsetSeconds) || 0);
   state.currentChunk = currentChunkIndex;
   clearPrefetch();
   void startPlayback();
