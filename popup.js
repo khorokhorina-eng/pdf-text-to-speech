@@ -78,6 +78,8 @@ const state = {
   language: "",
 };
 
+const EXTENSION_VERSION = chrome.runtime?.getManifest?.().version || "unknown";
+
 let textChunks = [];
 let currentChunkIndex = 0;
 let detectedLanguage = "";
@@ -213,6 +215,31 @@ function createPdfIdFromMeta({ name = "", size = 0, lastModified = 0 } = {}) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "") || "pdf";
   return `${safeName}_${Number(size) || 0}_${Number(lastModified) || 0}`;
+}
+
+function hashString(input) {
+  const value = String(input || "");
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function getCurrentPdfAnalyticsHash() {
+  return currentPdfId ? `pdf_${hashString(currentPdfId)}` : "";
+}
+
+function buildAnalyticsContext() {
+  const context = {
+    extension_version: EXTENSION_VERSION,
+  };
+  const pdfIdHash = getCurrentPdfAnalyticsHash();
+  if (pdfIdHash) {
+    context.pdf_id_hash = pdfIdHash;
+  }
+  return context;
 }
 
 function openPdfLibraryDb() {
@@ -1472,7 +1499,10 @@ function trackAnalyticsEvent(name, params = {}) {
   return sendRuntimeMessage({
     type: "trackAnalyticsEvent",
     name,
-    params,
+    params: {
+      ...buildAnalyticsContext(),
+      ...(params && typeof params === "object" ? params : {}),
+    },
     sessionId: ANALYTICS_SESSION_ID,
   }).catch(() => null);
 }
