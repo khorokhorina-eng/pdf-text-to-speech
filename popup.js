@@ -1047,12 +1047,19 @@ function getExtractionSuspectReason({
     return "no_extractable_text";
   }
 
-  if (
+  const isSparseCandidate =
     annotationsCount === 0 &&
     joinedTextLength < 80 &&
     cleanedRowsCount <= 2 &&
     normalizedRowsCount <= 3 &&
-    rawItemsCount <= 12
+    rawItemsCount <= 12;
+
+  if (pageNumber === 1 && isSparseCandidate) {
+    return "";
+  }
+
+  if (
+    isSparseCandidate
   ) {
     return pageNumber <= 2 ? "sparse_top_page_content" : "sparse_page_content";
   }
