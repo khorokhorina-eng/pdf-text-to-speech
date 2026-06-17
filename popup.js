@@ -53,6 +53,9 @@ const readerScreenEl = document.getElementById("readerScreen");
 const paywallScreenEl = document.getElementById("paywallScreen");
 const backToReaderBtn = document.getElementById("backToReader");
 const readerControlsEl = document.getElementById("readerControls");
+const activeTabPdfSectionEl = document.getElementById("activeTabPdfSection");
+const activeTabPdfMetaEl = document.getElementById("activeTabPdfMeta");
+const activeTabPdfActionBtn = document.getElementById("activeTabPdfAction");
 const REMOTE_API_BASE_URL = "https://pdftext2speech.com";
 const DEVICE_TOKEN_KEY = "deviceToken";
 const TRIAL_STATE_KEY = "trialState";
@@ -121,6 +124,11 @@ let activePreparationRunId = 0;
 let extensionOpenedTracked = false;
 let pageStartChunkMap = [];
 let pendingStartPage = null;
+let activeViewerState = null;
+let activeViewerMeta = null;
+let activeTabPdfCandidate = null;
+let isSwitchingActiveTabPdf = false;
+let viewerStatePollTimer = null;
 const pendingAudioRequests = new Map();
 const EXTRACTION_DEBUG_KEY = "pdfExtractionDebug";
 let extractionDebugEnabled = false;
@@ -197,7 +205,7 @@ const STATUS_LABELS = {
   reading: "Playing",
   paused: "Paused",
   finished: "Finished",
-  error: "Needs attention",
+  error: "Error",
 };
 
 function createEmptyLibraryState() {
@@ -562,16 +570,32 @@ function getPlanPresentation() {
 function updateUI() {
   document.body.dataset.status = state.status;
   statusEl.textContent = STATUS_LABELS[state.status] || "Ready";
-  statusEl.classList.toggle("hidden", state.status === "idle" || state.status === "finished");
+  const showStatusPill =
+    state.status === "loading" || state.status === "reading" || state.status === "paused";
+  statusEl.classList.toggle("hidden", !showStatusPill);
   hintEl.textContent = state.message || " ";
-  heroTitleEl.closest(".hero-card")?.classList.toggle("is-compact", Boolean(currentFileBuffer));
+  heroTitleEl.closest(".hero-card")?.classList.toggle("is-compact", hasLoadedPdf());
   const isLoading = state.status === "loading";
   const trialExhausted =
     !currentSubscription?.active && hasKnownTrialRemaining() && getLiveRemainingSeconds() <= 0;
   hintEl.classList.toggle("hero-copy-alert", trialExhausted);
-  readerControlsEl.classList.toggle("hidden", !currentFileBuffer);
-  openFileBtn.classList.toggle("hidden", Boolean(currentFileBuffer));
-  playBtn.disabled = !currentFileBuffer || isLoading;
+  readerControlsEl.classList.toggle("hidden", !hasLoadedPdf());
+  openFileBtn.classList.toggle("hidden", hasLoadedPdf());
+  const hasActiveTabCandidate = Boolean(activeTabPdfCandidate);
+  activeTabPdfSectionEl?.classList.toggle("hidden", !hasActiveTabCandidate);
+  if (activeTabPdfMetaEl) {
+    activeTabPdfMetaEl.textContent = hasActiveTabCandidate
+      ? `${activeTabPdfCandidate.fileName}${activeTabPdfCandidate.totalPages ? ` • ${activeTabPdfCandidate.totalPages} page${activeTabPdfCandidate.totalPages === 1 ? "" : "s"}` : ""}`
+      : "Current tab PDF detected.";
+  }
+  if (activeTabPdfActionBtn) {
+    activeTabPdfActionBtn.textContent =
+      isSwitchingActiveTabPdf
+        ? "Switching..."
+        : "Switch";
+    activeTabPdfActionBtn.disabled = !hasActiveTabCandidate || isSwitchingActiveTabPdf;
+  }
+  playBtn.disabled = !hasLoadedPdf() || isLoading;
   if (isLoading) {
     playBtn.textContent = "Preparing...";
   } else if (state.status === "reading") {
@@ -595,10 +619,10 @@ function updateUI() {
     if (!startPageInput.value && state.totalPages > 0) {
       startPageInput.value = "1";
     }
-    startPageInput.disabled = !currentFileBuffer;
+    startPageInput.disabled = !currentFileBuffer || Boolean(activeViewerState);
   }
   if (startFromPageBtn) {
-    startFromPageBtn.disabled = !currentFileBuffer || isLoading;
+    startFromPageBtn.disabled = !currentFileBuffer || Boolean(activeViewerState) || isLoading;
   }
   const activePlanId = currentSubscription?.plan?.planId || "";
   if (continueCheckoutMonthlyBtn) {
@@ -650,7 +674,7 @@ function updateUI() {
         ? `Your ${currentLabel} subscription renews on ${endLabel}. Use Stripe to change plans or cancel renewal.`
         : `Your ${currentLabel} subscription is active. Use Stripe to change plans or cancel renewal.`;
   }
-  if (!currentFileBuffer && !trialExhausted) {
+  if (!hasLoadedPdf() && !trialExhausted) {
     state.message = "Open a PDF in Chrome and start playback in the side panel.";
     hintEl.textContent = state.message;
   }
@@ -660,7 +684,7 @@ function updateUI() {
 function getHeroTitle() {
   const trialExhausted =
     !currentSubscription?.active && hasKnownTrialRemaining() && getLiveRemainingSeconds() <= 0;
-  if (!currentFileBuffer) {
+  if (!hasLoadedPdf()) {
     return "Ready to Listen";
   }
   if (trialExhausted) {
@@ -883,6 +907,8 @@ function resetPreparedText() {
   isPreparingText = false;
   preparationComplete = false;
   pendingStartPlayback = false;
+  activeViewerState = null;
+  activeViewerMeta = null;
   state.totalPages = 0;
   state.totalChunks = 0;
   state.currentChunk = 0;
@@ -1035,7 +1061,7 @@ function dedupeConsecutiveLines(lines) {
   return lines.filter((line, index) => line !== lines[index - 1]);
 }
 
-function getExtractionSuspectReason({
+function getExtractionSignal({
   pageNumber,
   rawItemsCount,
   normalizedRowsCount,
@@ -1044,7 +1070,7 @@ function getExtractionSuspectReason({
   annotationsCount,
 }) {
   if (rawItemsCount === 0 && annotationsCount === 0) {
-    return "no_extractable_text";
+    return { eventName: "pdf_page_extraction_suspect", reason: "no_extractable_text" };
   }
 
   const isSparseCandidate =
@@ -1055,16 +1081,17 @@ function getExtractionSuspectReason({
     rawItemsCount <= 12;
 
   if (pageNumber === 1 && isSparseCandidate) {
-    return "";
+    return null;
   }
 
-  if (
-    isSparseCandidate
-  ) {
-    return pageNumber <= 2 ? "sparse_top_page_content" : "sparse_page_content";
+  if (isSparseCandidate) {
+    return {
+      eventName: "pdf_page_extraction_sparse",
+      reason: pageNumber <= 2 ? "sparse_top_page_content" : "sparse_page_content",
+    };
   }
 
-  return "";
+  return null;
 }
 
 function maybeTrackExtractionSuspect({
@@ -1077,7 +1104,7 @@ function maybeTrackExtractionSuspect({
   pageWidth,
   usedColumnSplit,
 }) {
-  const reason = getExtractionSuspectReason({
+  const signal = getExtractionSignal({
     pageNumber,
     rawItemsCount,
     normalizedRowsCount,
@@ -1085,18 +1112,18 @@ function maybeTrackExtractionSuspect({
     joinedTextLength,
     annotationsCount,
   });
-  if (!reason) {
+  if (!signal?.reason || !signal?.eventName) {
     return;
   }
 
-  const dedupeKey = `${currentPdfId || "unknown"}:${pageNumber}:${reason}`;
+  const dedupeKey = `${signal.eventName}:${currentPdfId || "unknown"}:${pageNumber}:${signal.reason}`;
   if (extractionSuspectEventsSent.has(dedupeKey)) {
     return;
   }
   extractionSuspectEventsSent.add(dedupeKey);
 
-  void trackAnalyticsEvent("pdf_page_extraction_suspect", {
-    reason,
+  void trackAnalyticsEvent(signal.eventName, {
+    reason: signal.reason,
     page_number: pageNumber,
     raw_items_count: rawItemsCount,
     normalized_rows_count: normalizedRowsCount,
@@ -1502,6 +1529,310 @@ function sendRuntimeMessage(message) {
   });
 }
 
+function hasLoadedPdf() {
+  return Boolean(currentFileBuffer) || Boolean(activeViewerState);
+}
+
+function deriveViewerFileName(meta = {}, viewerState = null) {
+  const title = String(meta?.tabTitle || "").trim();
+  if (title && title.toLowerCase().includes(".pdf")) {
+    return title;
+  }
+  const candidateUrl =
+    String(viewerState?.debug?.pdfUrl || "").trim() ||
+    String(meta?.tabUrl || "").trim();
+  if (!candidateUrl) {
+    return "Current PDF";
+  }
+  try {
+    const parsed = new URL(candidateUrl);
+    const fileName = decodeURIComponent(parsed.pathname.split("/").pop() || "").trim();
+    return fileName || "Current PDF";
+  } catch (_error) {
+    return "Current PDF";
+  }
+}
+
+function syncRemoteViewerState(viewerState, meta = null) {
+  activeViewerState = viewerState || null;
+  activeViewerMeta = viewerState ? meta || activeViewerMeta : null;
+  if (!viewerState) {
+    return;
+  }
+  state.status = viewerState.status || "idle";
+  state.message = viewerState.message || "";
+  state.totalPages = Number(viewerState.totalPages) || 0;
+  state.totalChunks = Number(viewerState.totalChunks) || 0;
+  state.currentChunk = Number(viewerState.currentChunk) || 0;
+  state.language = viewerState.language || "";
+  state.speed = Number(viewerState.speed) || state.speed || 1;
+  state.fileName = deriveViewerFileName(meta, viewerState);
+  speedSelect.value = String(state.speed);
+}
+
+function hasUsableViewerState(viewerState) {
+  if (!viewerState) {
+    return false;
+  }
+  const totalPages = Number(viewerState.totalPages) || 0;
+  if (totalPages > 0) {
+    return true;
+  }
+  const message = String(viewerState.message || "").toLowerCase();
+  if (!message) {
+    return false;
+  }
+  if (message.includes("unable to access pdf text") || message.includes("invalid pdf structure")) {
+    return false;
+  }
+  return viewerState.status === "idle" || viewerState.status === "paused" || viewerState.status === "reading";
+}
+
+function buildViewerCandidate(result) {
+  if (!result?.state || !hasUsableViewerState(result.state)) {
+    return null;
+  }
+  const fileName = deriveViewerFileName(result, result.state || null);
+  const pdfUrl = String(result.pdfUrl || result.state?.debug?.pdfUrl || result.tabUrl || "").trim();
+  return {
+    fileName,
+    pdfUrl,
+    totalPages: Number(result.totalPages || result.state?.totalPages) || 0,
+    state: result.state,
+    meta: result,
+  };
+}
+
+function isSameViewerCandidate(candidate) {
+  if (!candidate) {
+    return false;
+  }
+  if (currentPdfId) {
+    const candidateId = createPdfIdFromMeta({
+      name: candidate.fileName,
+      size: candidate.pdfUrl.length,
+      lastModified: candidate.totalPages || 0,
+    });
+    if (candidateId === currentPdfId) {
+      return true;
+    }
+  }
+  return candidate.fileName === state.fileName;
+}
+
+function clearActiveTabPdfCandidate() {
+  activeTabPdfCandidate = null;
+}
+
+async function refreshActiveViewerState(options = {}) {
+  const { silent = false } = options;
+  try {
+    const result = await sendRuntimeMessage({ type: "getActivePdfState" });
+    const candidate = buildViewerCandidate(result);
+    if (currentFileBuffer) {
+      activeViewerState = null;
+      activeViewerMeta = null;
+      activeTabPdfCandidate = candidate && !isSameViewerCandidate(candidate) ? candidate : null;
+    } else {
+      clearActiveTabPdfCandidate();
+      syncRemoteViewerState(candidate ? result.state || null : null, candidate ? result : null);
+    }
+    updateUI();
+    return true;
+  } catch (_error) {
+    clearActiveTabPdfCandidate();
+    if (!currentFileBuffer) {
+      activeViewerState = null;
+      activeViewerMeta = null;
+      state.status = "idle";
+      state.message = "Open a PDF in Chrome and start playback in the side panel.";
+      state.totalPages = 0;
+      state.totalChunks = 0;
+      state.currentChunk = 0;
+      state.fileName = "";
+      updateUI();
+    } else if (!silent) {
+      updateUI();
+    }
+    return false;
+  }
+}
+
+function startViewerStatePolling() {
+  if (viewerStatePollTimer) {
+    clearInterval(viewerStatePollTimer);
+  }
+  viewerStatePollTimer = setInterval(() => {
+    void refreshActiveViewerState({ silent: true });
+  }, 2000);
+}
+
+async function controlActiveViewer(commandType, extra = {}) {
+  const result = await sendRuntimeMessage({
+    type: "controlActivePdfViewer",
+    commandType,
+    ...extra,
+  });
+  syncRemoteViewerState(result.state || null, result);
+  updateUI();
+}
+
+async function importActiveViewerPdf() {
+  const sourceMeta = activeTabPdfCandidate?.meta || null;
+  const sourcePdfUrlHint = String(
+    sourceMeta?.pdfUrl || sourceMeta?.state?.debug?.pdfUrl || activeViewerMeta?.tabUrl || activeViewerState?.debug?.pdfUrl || ""
+  ).trim();
+  if (sourcePdfUrlHint) {
+    try {
+      const fetched = await sendRuntimeMessage({
+        type: "fetchPdfBytes",
+        url: sourcePdfUrlHint,
+      });
+      if (Array.isArray(fetched.bytes) && fetched.bytes.length) {
+        await loadImportedPdfBuffer(
+          Uint8Array.from(fetched.bytes).buffer,
+          deriveViewerFileName(sourceMeta || activeViewerMeta || {}, sourceMeta?.state || activeViewerState || null),
+          sourcePdfUrlHint,
+          Number(sourceMeta?.totalPages || activeViewerState?.totalPages) || 0
+        );
+        clearActiveTabPdfCandidate();
+        return true;
+      }
+    } catch (_error) {
+      // Fall back to content-script export path.
+    }
+  }
+  const result = sourceMeta
+    ? await sendRuntimeMessage({
+        type: "exportActivePdfText",
+        tabId: sourceMeta.tabId,
+      })
+    : await sendRuntimeMessage({ type: "exportActivePdfText" });
+  let rawBytes = Array.isArray(result.bytes) && result.bytes.length
+    ? Uint8Array.from(result.bytes).buffer
+    : null;
+  const sourcePdfUrl = String(result.pdfUrl || sourceMeta?.pdfUrl || "").trim();
+  if (!rawBytes && sourcePdfUrl) {
+    try {
+      const fetched = await sendRuntimeMessage({
+        type: "fetchPdfBytes",
+        url: sourcePdfUrl,
+      });
+      if (Array.isArray(fetched.bytes) && fetched.bytes.length) {
+        rawBytes = Uint8Array.from(fetched.bytes).buffer;
+      }
+    } catch (_error) {
+      // Fall back to exported text if direct byte fetch is unavailable.
+    }
+  }
+  if (rawBytes) {
+    await loadImportedPdfBuffer(
+      rawBytes,
+      deriveViewerFileName(result, result.state || null),
+      sourcePdfUrl,
+      Number(result.totalPages) || 0
+    );
+    clearActiveTabPdfCandidate();
+    return true;
+  }
+  const pages = Array.isArray(result.pages) ? result.pages.map((page) => normalizeText(page)).filter(Boolean) : [];
+  if (!pages.length) {
+    throw new Error(result?.state?.message || "No readable PDF text found in the active tab.");
+  }
+  resetPreparedText();
+  currentFileBuffer = new ArrayBuffer(1);
+  const sourceName = deriveViewerFileName(result, result.state || null);
+  state.fileName = sourceName;
+  currentPdfId = createPdfIdFromMeta({
+    name: sourceName,
+    size: (result.pdfUrl || "").length,
+    lastModified: Number(result.totalPages) || pages.length,
+  });
+  state.totalPages = Number(result.totalPages) || pages.length;
+  state.currentChunk = 0;
+  detectedLanguage = result.state?.language || "";
+  state.language = detectedLanguage;
+  textChunks = buildChunks(pages, { useSmallFirstChunk: true });
+  state.totalChunks = textChunks.length;
+  preparationComplete = true;
+  isPreparingText = false;
+  activeViewerState = null;
+  activeViewerMeta = null;
+  clearActiveTabPdfCandidate();
+  updateUI();
+  return true;
+}
+
+async function loadImportedPdfBuffer(buffer, sourceName, sourcePdfUrl = "", totalPagesHint = 0) {
+  const runId = ++activePreparationRunId;
+  resetPreparedText();
+  currentFileBuffer = buffer;
+  state.fileName = sourceName || "PDF document";
+  setStatus("loading", "Loading your PDF...");
+  currentPdfId = createPdfIdFromMeta({
+    name: sourceName || "PDF document",
+    size: buffer.byteLength || String(sourcePdfUrl || "").length,
+    lastModified: totalPagesHint || 0,
+  });
+  isPreparingText = true;
+  preparationComplete = false;
+  const pdf = await openPdfDocument(currentFileBuffer);
+  if (runId !== activePreparationRunId) {
+    return;
+  }
+  state.totalPages = pdf.numPages;
+  state.currentChunk = 0;
+  const initialPagesEnd = Math.min(INITIAL_PREPARED_PAGES, pdf.numPages);
+  const initialResult = await preparePdfPages(pdf, 1, initialPagesEnd, runId, () => {
+    warmPreparedChunk(0, playbackToken);
+    if (pendingStartPlayback) {
+      pendingStartPlayback = false;
+      playbackToken += 1;
+      warmPreparedChunk(0, playbackToken);
+      void speakCurrentChunk(playbackToken);
+    } else {
+      setStatus("idle", "Your PDF is ready in the player.");
+    }
+  });
+  if (initialResult.cancelled || runId !== activePreparationRunId) {
+    return;
+  }
+  if (!textChunks.length) {
+    setStatus("error", "No readable text found. This PDF may be scanned.");
+    isPreparingText = false;
+    preparationComplete = true;
+    return;
+  }
+  if (!detectedLanguage) {
+    const sample = textChunks.slice(0, 3).join(" ").slice(0, 1000);
+    detectedLanguage = await detectLanguageFromText(sample);
+    state.language = detectedLanguage;
+  }
+  warmPreparedChunk(0, playbackToken);
+  if (pdf.numPages > initialPagesEnd) {
+    continuePreparingRemainingPages(pdf, initialPagesEnd + 1, runId);
+    return;
+  }
+  finishPreparation(runId);
+}
+
+async function switchToActiveTabPdf() {
+  if (!activeTabPdfCandidate || isSwitchingActiveTabPdf) {
+    return;
+  }
+  isSwitchingActiveTabPdf = true;
+  updateUI();
+  try {
+    await importActiveViewerPdf();
+    await startPlayback();
+  } catch (error) {
+    setStatus("error", error.message || "Unable to switch to the PDF in the current tab.");
+  } finally {
+    isSwitchingActiveTabPdf = false;
+    updateUI();
+  }
+}
+
 function trackAnalyticsEvent(name, params = {}) {
   return sendRuntimeMessage({
     type: "trackAnalyticsEvent",
@@ -1718,13 +2049,14 @@ function updateLibraryUI() {
   const bookmarkedRecentEntries = getRecentEntriesWithBookmarks(currentPdfId);
 
   const showResume =
-    Boolean(latestResume) ||
-    Boolean(!currentPdfId && latestRecent) ||
-    (Boolean(currentPdfId) &&
+    !hasLoadedPdf() &&
+    (Boolean(latestResume) ||
+      Boolean(!currentPdfId && latestRecent) ||
+      (Boolean(currentPdfId) &&
       Boolean(currentResume) &&
       Number.isFinite(currentResume.chunkIndex) &&
       currentResume.chunkIndex > 0 &&
-      (!Number.isFinite(currentResume.totalChunks) || currentResume.chunkIndex < currentResume.totalChunks));
+      (!Number.isFinite(currentResume.totalChunks) || currentResume.chunkIndex < currentResume.totalChunks)));
   resumeSectionEl.classList.toggle("hidden", !showResume);
   if (showResume) {
     const sourceResume =
@@ -2092,7 +2424,7 @@ function trackExtensionOpened() {
   extensionOpenedTracked = true;
   void trackAnalyticsEvent("extension_opened", {
     signed_in: authState.signedIn,
-    has_pdf: Boolean(currentFileBuffer),
+    has_pdf: hasLoadedPdf(),
     trial_seconds_left: Number.isFinite(getLiveRemainingSeconds())
       ? getLiveRemainingSeconds()
       : -1,
@@ -2214,7 +2546,7 @@ function openPaywall(source = "unknown") {
     signed_in: authState.signedIn,
     trial_seconds_left: trialSecondsLeft,
     trial_exhausted: trialExhausted,
-    has_pdf: Boolean(currentFileBuffer),
+    has_pdf: hasLoadedPdf(),
   });
   if (!currentSubscription?.active && getLiveRemainingSeconds() <= 0) {
     setPaywallStatus("Today's free listening is over. Come back tomorrow or unlock unlimited listening.");
@@ -2374,7 +2706,7 @@ function showPaywallLimitReached() {
   stopPlaybackUiTimer();
   void trackAnalyticsEvent("trial_exhausted", {
     signed_in: authState.signedIn,
-    has_pdf: Boolean(currentFileBuffer),
+    has_pdf: hasLoadedPdf(),
   });
   void persistResumePosition(currentChunkIndex);
   setStatus("error", paywallReachedMessage());
@@ -3191,6 +3523,14 @@ async function speakCurrentChunk(token = playbackToken) {
 }
 
 async function startPlayback() {
+  if (activeViewerState) {
+    try {
+      await importActiveViewerPdf();
+    } catch (error) {
+      setStatus("error", error.message || "Unable to import the active PDF.");
+      return;
+    }
+  }
   if (!textChunks.length && isPreparingText) {
     pendingStartPlayback = true;
     setStatus("loading", "Preparing the first pages...");
@@ -3238,6 +3578,16 @@ async function startPlayback() {
 }
 
 async function pausePlayback() {
+  if (activeViewerState) {
+    if (state.status === "reading") {
+      await controlActiveViewer("pause");
+      return;
+    }
+    if (state.status === "paused") {
+      await controlActiveViewer("resume");
+    }
+    return;
+  }
   if (!currentAudio) {
     return;
   }
@@ -3279,6 +3629,10 @@ async function pausePlayback() {
 }
 
 async function stopPlayback() {
+  if (activeViewerState) {
+    await controlActiveViewer("stop");
+    return;
+  }
   playbackToken += 1;
   await commitPlaybackUsage().catch(() => null);
   await persistResumePosition(currentChunkIndex, 0);
@@ -3396,6 +3750,10 @@ stopBtn?.addEventListener("click", () => {
 
 speedSelect.addEventListener("change", async (event) => {
   state.speed = Number.parseFloat(event.target.value) || 1;
+  if (activeViewerState) {
+    await controlActiveViewer("setSpeed", { speed: state.speed });
+    return;
+  }
   clearPrefetch();
   if (currentAudio) {
     currentAudio.playbackRate = getEffectiveSpeed(state.speed);
@@ -3485,8 +3843,24 @@ authGoogleBtn.addEventListener("click", () => {
   void signInWithGoogle("paywall", "paywall_google_button");
 });
 
+activeTabPdfActionBtn?.addEventListener("click", () => {
+  void switchToActiveTabPdf();
+});
+
+activeTabPdfSectionEl?.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+  if (target.closest("#activeTabPdfAction")) {
+    return;
+  }
+  void switchToActiveTabPdf();
+});
+
 window.addEventListener("focus", () => {
   void loadAuthState()
+    .then(() => refreshActiveViewerState({ silent: true }))
     .then(() => refreshQuotaSnapshot())
     .then(() => {
       if (isAuthenticating && !authState.signedIn) {
@@ -3505,12 +3879,18 @@ void loadLibraryState()
   .then(() => loadExtractionDebugFlag())
   .then(() => loadPricingPlans())
   .then(() => loadAuthState())
+  .then(() => refreshActiveViewerState({ silent: true }))
   .then(() => refreshQuotaSnapshot())
   .then(() => {
     trackExtensionOpened();
+    startViewerStatePolling();
   });
 
 window.addEventListener("beforeunload", () => {
+  if (viewerStatePollTimer) {
+    clearInterval(viewerStatePollTimer);
+    viewerStatePollTimer = null;
+  }
   commitPlaybackUsage().catch(() => null);
   cleanupCurrentAudio();
 });

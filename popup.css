@@ -457,6 +457,43 @@ button:disabled {
   line-height: 1.3;
 }
 
+.inline-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.inline-banner-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.inline-banner-label {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.inline-banner-value {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.3;
+  font-weight: 620;
+  color: #2b2724;
+  word-break: break-word;
+}
+
 .library-list {
   margin-top: 10px;
   display: flex;

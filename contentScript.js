@@ -20,6 +20,7 @@ const state = {
 const pdfjs = window.pdfjsLib;
 const PAYWALL_LIMIT_SECONDS = 120;
 let textChunks = [];
+let preparedPages = [];
 let currentChunkIndex = 0;
 let isPreparing = false;
 let restartOnResume = false;
@@ -38,6 +39,8 @@ let prefetchPromise = null;
 let lastKnownRemainingSeconds = 0;
 let sessionRemainingSeconds = null;
 let minFreePlaybackStartSeconds = 0;
+let prepareTextPromise = null;
+let lastPdfBytes = null;
 
 if (pdfjs?.GlobalWorkerOptions) {
   pdfjs.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL(
@@ -435,7 +438,10 @@ async function extractPdfText(url) {
   });
 
   const openPdf = async (source) => {
-    const loadingTask = pdfjs.getDocument(source);
+    const loadingTask = pdfjs.getDocument({
+      ...source,
+      disableWorker: true,
+    });
     return loadingTask.promise;
   };
 
@@ -532,6 +538,7 @@ async function extractPdfText(url) {
           }
         }
         pdf = await openPdf({ data: buffer });
+        lastPdfBytes = Array.from(new Uint8Array(buffer));
         updateDebug({ stage: "pdf_opened", pdfUrl: candidate, lastError: "" });
         break;
       } catch (error) {
@@ -556,6 +563,7 @@ async function extractPdfText(url) {
     try {
       updateDebug({ stage: "loading_remote_pdf", pdfUrl: url });
       pdf = await openPdf({ url, withCredentials: false });
+      lastPdfBytes = null;
       updateDebug({ stage: "pdf_opened", pdfUrl: url, lastError: "" });
     } catch (error) {
       lastError = error;
@@ -641,12 +649,62 @@ function resolvePdfUrl() {
     }
   };
 
+  const resolveDrivePreviewUrlFromDom = () => {
+    const selectors = [
+      'a[href*="/file/d/"][href*="/view"]',
+      'iframe[src*="/file/d/"][src*="/view"]',
+      'iframe[src*="export=download&id="]',
+      '[data-href*="/file/d/"][data-href*="/view"]',
+      '[data-url*="/file/d/"][data-url*="/view"]',
+    ];
+    for (const selector of selectors) {
+      const nodes = Array.from(document.querySelectorAll(selector));
+      for (const node of nodes) {
+        const raw =
+          node.getAttribute("href") ||
+          node.getAttribute("src") ||
+          node.getAttribute("data-href") ||
+          node.getAttribute("data-url") ||
+          "";
+        const candidate = sanitizePdfUrl(raw);
+        if (!candidate) {
+          continue;
+        }
+        try {
+          const parsed = new URL(candidate, window.location.origin);
+          const driveMatch = parsed.pathname.match(/^\/file\/d\/([^/]+)\/view/i);
+          if (driveMatch?.[1]) {
+            return `https://drive.google.com/uc?export=download&id=${encodeURIComponent(driveMatch[1])}`;
+          }
+          if (parsed.hostname === "drive.google.com" && parsed.searchParams.get("id")) {
+            return `https://drive.google.com/uc?export=download&id=${encodeURIComponent(parsed.searchParams.get("id"))}`;
+          }
+        } catch (_error) {
+          continue;
+        }
+      }
+    }
+    return "";
+  };
+
   if (window.location.protocol === "file:") {
     return sanitizePdfUrl(currentUrl);
   }
 
   try {
     const parsed = new URL(currentUrl);
+    const driveFileMatch = parsed.hostname === "drive.google.com"
+      ? parsed.pathname.match(/^\/file\/d\/([^/]+)\/view/i)
+      : null;
+    if (driveFileMatch?.[1]) {
+      return `https://drive.google.com/uc?export=download&id=${encodeURIComponent(driveFileMatch[1])}`;
+    }
+    if (parsed.hostname === "drive.google.com") {
+      const previewUrl = resolveDrivePreviewUrlFromDom();
+      if (previewUrl) {
+        return previewUrl;
+      }
+    }
     const candidates = [
       parsed.searchParams.get("src"),
       parsed.searchParams.get("url"),
@@ -666,63 +724,68 @@ function resolvePdfUrl() {
 
 async function prepareText() {
   if (isPreparing) {
-    return;
+    return prepareTextPromise;
   }
   isPreparing = true;
-  try {
-    const pdfUrl = resolvePdfUrl();
-    lastResolvedPdfUrl = pdfUrl;
-    updateDebug({
-      stage: "preparing_text",
-      pdfUrl,
-      pageTextLengths: [],
-      totalExtractedChars: 0,
-      lastError: "",
-      sourceType: pdfUrl.startsWith("file://") ? "file" : "remote",
-    });
-    const { pages, totalPages } = await extractPdfText(pdfUrl);
-    state.totalPages = totalPages;
-    textChunks = buildChunks(pages);
-    state.totalChunks = textChunks.length;
-    state.currentChunk = 0;
-    updateDebug({
-      stage: "chunks_built",
-      totalExtractedChars: pages.reduce((sum, page) => sum + page.length, 0),
-      lastError: "",
-    });
-
-    if (!textChunks.length) {
+  prepareTextPromise = (async () => {
+    try {
+      const pdfUrl = resolvePdfUrl();
+      lastResolvedPdfUrl = pdfUrl;
       updateDebug({
-        stage: "no_text_chunks",
-        lastError: "PDF opened, but no selectable text was extracted.",
+        stage: "preparing_text",
+        pdfUrl,
+        pageTextLengths: [],
+        totalExtractedChars: 0,
+        lastError: "",
+        sourceType: pdfUrl.startsWith("file://") ? "file" : "remote",
       });
-      setStatus("error", "No selectable text found. This PDF might be scanned.");
-      isPreparing = false;
-      return;
-    }
+      const { pages, totalPages } = await extractPdfText(pdfUrl);
+      preparedPages = pages.slice();
+      state.totalPages = totalPages;
+      textChunks = buildChunks(pages);
+      state.totalChunks = textChunks.length;
+      state.currentChunk = 0;
+      updateDebug({
+        stage: "chunks_built",
+        totalExtractedChars: pages.reduce((sum, page) => sum + page.length, 0),
+        lastError: "",
+      });
 
-    const sample = textChunks.slice(0, 3).join(" ").slice(0, 1000);
-    detectedLanguage = await detectLanguageFromText(sample);
-    state.language = detectedLanguage;
-    updateDebug({
-      stage: "ready",
-      lastError: "",
-    });
-    setStatus("idle", "");
-  } catch (error) {
-    const details =
-      error && typeof error.message === "string" ? error.message : "";
-    updateDebug({
-      stage: "prepare_failed",
-      lastError: details || "Unknown PDF preparation error.",
-    });
-    const message = details
-      ? `Unable to access PDF text: ${details} (resolved: ${lastResolvedPdfUrl})`
-      : "Unable to access PDF text. For local files, enable file access in the extension settings.";
-    setStatus("error", message);
-  } finally {
-    isPreparing = false;
-  }
+      if (!textChunks.length) {
+        updateDebug({
+          stage: "no_text_chunks",
+          lastError: "PDF opened, but no selectable text was extracted.",
+        });
+        setStatus("error", "No selectable text found. This PDF might be scanned.");
+        return;
+      }
+
+      const sample = textChunks.slice(0, 3).join(" ").slice(0, 1000);
+      detectedLanguage = await detectLanguageFromText(sample);
+      state.language = detectedLanguage;
+      updateDebug({
+        stage: "ready",
+        lastError: "",
+      });
+      setStatus("idle", "");
+    } catch (error) {
+      preparedPages = [];
+      const details =
+        error && typeof error.message === "string" ? error.message : "";
+      updateDebug({
+        stage: "prepare_failed",
+        lastError: details || "Unknown PDF preparation error.",
+      });
+      const message = details
+        ? `Unable to access PDF text: ${details} (resolved: ${lastResolvedPdfUrl})`
+        : "Unable to access PDF text. For local files, enable file access in the extension settings.";
+      setStatus("error", message);
+    } finally {
+      isPreparing = false;
+      prepareTextPromise = null;
+    }
+  })();
+  return prepareTextPromise;
 }
 
 function cleanupCurrentAudio() {
@@ -1086,8 +1149,50 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "getState") {
-    sendResponse({ state });
-    return false;
+    const respondWithState = async () => {
+      if (!preparedPages.length) {
+        setStatus("loading", "Loading PDF text...");
+        await prepareText().catch(() => null);
+      }
+      return { state, pdfUrl: lastResolvedPdfUrl || "" };
+    };
+    respondWithState()
+      .then((payload) => sendResponse(payload))
+      .catch(() => sendResponse({ state, pdfUrl: lastResolvedPdfUrl || "" }));
+    return true;
+  }
+
+  if (message.type === "exportPreparedText") {
+    const exportPayload = async () => {
+      if (!preparedPages.length) {
+        await prepareText();
+      }
+      const fallbackPages =
+        preparedPages.length > 0
+          ? preparedPages.slice()
+          : textChunks.length > 0
+          ? [textChunks.join(" ")]
+          : [];
+      return {
+        state,
+        pages: fallbackPages,
+        totalPages: state.totalPages || fallbackPages.length,
+        pdfUrl: lastResolvedPdfUrl || "",
+        bytes: Array.isArray(lastPdfBytes) ? lastPdfBytes.slice() : null,
+      };
+    };
+    exportPayload()
+      .then((payload) => sendResponse(payload))
+      .catch(() =>
+        sendResponse({
+          state,
+          pages: [],
+          totalPages: 0,
+          pdfUrl: lastResolvedPdfUrl || "",
+          bytes: Array.isArray(lastPdfBytes) ? lastPdfBytes.slice() : null,
+        })
+      );
+    return true;
   }
 
   if (message.type === "start") {

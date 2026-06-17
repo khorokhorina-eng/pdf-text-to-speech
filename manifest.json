@@ -2,7 +2,7 @@
   "name": "__MSG_appName__",
   "description": "__MSG_shortDesc__",
   "default_locale": "en",
-  "version": "1.2.13",
+  "version": "1.2.14",
   "manifest_version": 3,
   "background": {
     "service_worker": "background.js"
@@ -23,11 +23,12 @@
   "side_panel": {
     "default_path": "popup.html"
   },
-  "permissions": ["storage", "sidePanel", "tabs"],
+  "permissions": ["storage", "sidePanel", "tabs", "scripting"],
   "host_permissions": [
     "*://*/*.pdf",
     "*://*/*.PDF",
     "file:///*",
+    "https://drive.google.com/file/*",
     "https://pdftext2speech.com/*",
     "https://www.pdftext2speech.com/*"
   ],
@@ -36,7 +37,8 @@
       "matches": [
         "*://*/*.pdf",
         "*://*/*.PDF",
-        "file:///*"
+        "file:///*",
+        "https://drive.google.com/file/*"
       ],
       "js": [
         "vendor/pdfjs/pdf.min.js",

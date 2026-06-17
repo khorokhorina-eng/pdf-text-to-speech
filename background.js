@@ -11,6 +11,7 @@ const BILLING_ENDPOINTS = [
 
 const DEFAULT_FREE_TRIAL_SECONDS = 300;
 const DEFAULT_MIN_FREE_PLAYBACK_START_SECONDS = 0;
+const TTS_REQUEST_TIMEOUT_MS = 25000;
 const DEVICE_TOKEN_KEY = "deviceToken";
 const AUTH_SESSION_KEY = "authSession";
 const TRIAL_STATE_KEY = "trialState";
@@ -485,6 +486,10 @@ async function synthesizeSpeech({ text, speed, language }) {
   let lastError = null;
   for (const endpoint of TTS_ENDPOINTS) {
     try {
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timeoutId = controller
+        ? setTimeout(() => controller.abort(), TTS_REQUEST_TIMEOUT_MS)
+        : null;
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -492,7 +497,11 @@ async function synthesizeSpeech({ text, speed, language }) {
           "x-device-token": deviceToken,
         },
         body: JSON.stringify({ input: text, speed, language }),
+        signal: controller?.signal,
       });
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
 
       if (!response.ok) {
         const details = await response.text().catch(() => "");
@@ -507,6 +516,10 @@ async function synthesizeSpeech({ text, speed, language }) {
         mimeType: response.headers.get("content-type") || "audio/mpeg",
       };
     } catch (error) {
+      if (error?.name === "AbortError") {
+        lastError = new Error("Remote TTS timed out.");
+        continue;
+      }
       lastError = error;
     }
   }
@@ -583,6 +596,72 @@ async function trackAnalyticsEvent(name, params = {}, sessionId = "") {
     tracked: data?.ok !== false,
     skipped: !!data?.skipped,
     reason: data?.reason || null,
+  };
+}
+
+async function getActiveWindowTab() {
+  const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const activeTab = tabs?.[0] || null;
+  if (!activeTab) {
+    return null;
+  }
+  const rawUrl = String(activeTab.url || "");
+  if (!rawUrl) {
+    return activeTab;
+  }
+  if (rawUrl.startsWith("chrome-extension://") || rawUrl.startsWith("blob:chrome-extension://")) {
+    return null;
+  }
+  return activeTab;
+}
+
+async function getTabById(tabId) {
+  if (!tabId) {
+    return getActiveWindowTab();
+  }
+  try {
+    return await chrome.tabs.get(tabId);
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function ensurePdfContentScriptInjected(tabId) {
+  if (!chrome.scripting?.executeScript) {
+    throw new Error("Scripting API is unavailable.");
+  }
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["vendor/pdfjs/pdf.min.js", "contentScript.js"],
+  });
+}
+
+async function sendMessageToActivePdfTab(message, options = {}) {
+  const tab = await getTabById(options.tabId);
+  if (!tab?.id) {
+    throw new Error("No readable PDF tab found.");
+  }
+  let response;
+  try {
+    response = await chrome.tabs.sendMessage(tab.id, message);
+  } catch (firstError) {
+    await ensurePdfContentScriptInjected(tab.id);
+    response = await chrome.tabs.sendMessage(tab.id, message).catch((secondError) => {
+      throw new Error(
+        secondError?.message ||
+          firstError?.message ||
+          "No PDF reader found in the active tab."
+      );
+    });
+  }
+  if (!response?.state) {
+    throw new Error("No PDF reader found in the active tab.");
+  }
+  return {
+    state: response.state,
+    tabId: tab.id,
+    tabTitle: tab.title || "",
+    tabUrl: tab.url || "",
   };
 }
 
@@ -729,6 +808,43 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => {
         const errorMessage =
           error && error.message ? error.message : "TTS request failed.";
+        sendResponse({ ok: false, error: errorMessage });
+      });
+    return true;
+  }
+
+  if (message.type === "getActivePdfState") {
+    sendMessageToActivePdfTab({ type: "getState" }, { tabId: message.tabId })
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => {
+        const errorMessage =
+          error && error.message ? error.message : "No readable PDF found in the active tab.";
+        sendResponse({ ok: false, error: errorMessage });
+      });
+    return true;
+  }
+
+  if (message.type === "exportActivePdfText") {
+    sendMessageToActivePdfTab({ type: "exportPreparedText" }, { tabId: message.tabId })
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => {
+        const errorMessage =
+          error && error.message ? error.message : "Unable to export text from the active PDF.";
+        sendResponse({ ok: false, error: errorMessage });
+      });
+    return true;
+  }
+
+  if (message.type === "controlActivePdfViewer" && message.commandType) {
+    const payload =
+      message.commandType === "setSpeed"
+        ? { type: "setSpeed", speed: message.speed }
+        : { type: message.commandType };
+    sendMessageToActivePdfTab(payload, { tabId: message.tabId })
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => {
+        const errorMessage =
+          error && error.message ? error.message : "Unable to control the active PDF reader.";
         sendResponse({ ok: false, error: errorMessage });
       });
     return true;
