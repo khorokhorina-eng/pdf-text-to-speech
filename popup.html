@@ -64,6 +64,16 @@
             <p class="eyebrow">PDF Listening Player</p>
             <h1 id="heroTitle" class="hero-title">Ready to Listen</h1>
             <p id="hint" class="hero-copy">Open a PDF in Chrome and start playback in the side panel.</p>
+            <div id="fileAccessHelp" class="file-access-help hidden">
+              <button id="openExtensionSettings" class="secondary-action" type="button">
+                Open extension settings
+              </button>
+              <ol class="file-access-steps">
+                <li>Turn on <strong>Allow access to file URLs</strong>.</li>
+                <li>Return to this PDF tab.</li>
+                <li>Reopen the file if needed.</li>
+              </ol>
+            </div>
           </div>
 
           <input id="fileInput" class="hidden-input" type="file" accept=".pdf,application/pdf" />

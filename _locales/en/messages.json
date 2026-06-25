@@ -3,7 +3,7 @@
     "message": "PDF Text to Speech"
   },
   "shortDesc": {
-    "message": "Listen to PDFs in Chrome with read aloud playback."
+    "message": "Convert PDF text to speech and listen to documents in Chrome with natural, easy playback."
   },
   "storeDesc": {
     "message": "Listen to PDF files directly in Chrome with clear audio playback.\n\nPDF Text to Speech helps users turn written PDF content into spoken audio so documents are easier to review during work, study, and everyday reading.\n\nWhat the extension does:\n- opens PDF files in Chrome and prepares them for listening\n- reads PDF text aloud with adjustable playback speed\n- lets users pause, resume, and continue listening\n- supports saved sections and returning to recent documents\n\nCommon use cases:\n- reviewing long documents without constant screen reading\n- listening to study materials, reports, manuals, and forms\n- reducing eye strain during long reading sessions\n- following written content while multitasking\n\nHow it works:\n1. Open a PDF in Chrome.\n2. Start listening from the extension.\n3. Adjust speed or jump to a page when needed.\n4. Continue listening from saved sections later.\n\nService and billing:\n- The extension includes a limited daily listening allowance.\n- Continued listening after the daily limit requires a paid plan.\n- Payments and subscriptions are handled through Stripe.\n\nPrivacy summary:\n- PDF text is processed to generate audio playback.\n- Usage state is stored to manage listening limits and subscription access.\n- Checkout and billing are handled through Stripe.\n\nPDF Text to Speech is designed for users who want a simple way to listen to PDF content in Chrome."

@@ -615,6 +615,24 @@ async function getActiveWindowTab() {
   return activeTab;
 }
 
+function normalizeActivePdfTabError(error, tab) {
+  const rawMessage = String(error?.message || "");
+  const tabUrl = String(tab?.url || "");
+  const isLocalFileTab = tabUrl.startsWith("file://");
+  if (
+    isLocalFileTab &&
+    (
+      rawMessage.includes("Cannot access contents of url") ||
+      rawMessage.includes("Cannot access a chrome:// URL") ||
+      rawMessage.includes("Missing host permission") ||
+      rawMessage.includes("Extension manifest must request permission to access this host")
+    )
+  ) {
+    return new Error("Enable 'Allow access to file URLs' for PDF Text to Speech in chrome://extensions, then reopen this PDF tab.");
+  }
+  return error instanceof Error ? error : new Error(rawMessage || "No PDF reader found in the active tab.");
+}
+
 async function getTabById(tabId) {
   if (!tabId) {
     return getActiveWindowTab();
@@ -645,12 +663,15 @@ async function sendMessageToActivePdfTab(message, options = {}) {
   try {
     response = await chrome.tabs.sendMessage(tab.id, message);
   } catch (firstError) {
-    await ensurePdfContentScriptInjected(tab.id);
+    try {
+      await ensurePdfContentScriptInjected(tab.id);
+    } catch (injectError) {
+      throw normalizeActivePdfTabError(injectError || firstError, tab);
+    }
     response = await chrome.tabs.sendMessage(tab.id, message).catch((secondError) => {
-      throw new Error(
-        secondError?.message ||
-          firstError?.message ||
-          "No PDF reader found in the active tab."
+      throw normalizeActivePdfTabError(
+        secondError || firstError || new Error("No PDF reader found in the active tab."),
+        tab
       );
     });
   }

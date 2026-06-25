@@ -253,6 +253,26 @@ body {
   max-width: none;
 }
 
+.file-access-help {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.file-access-steps {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.file-access-steps strong {
+  color: var(--ink);
+}
+
 .trial-banner-copy,
 .paywall-status,
 .auth-message,

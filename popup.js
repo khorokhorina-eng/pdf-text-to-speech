@@ -3,6 +3,8 @@ const statusEl = document.getElementById("status");
 const hintEl = document.getElementById("hint");
 const fileNameLabelEl = document.getElementById("fileNameLabel");
 const heroTitleEl = document.getElementById("heroTitle");
+const fileAccessHelpEl = document.getElementById("fileAccessHelp");
+const openExtensionSettingsBtn = document.getElementById("openExtensionSettings");
 const resumeSectionEl = document.getElementById("resumeSection");
 const resumeMetaEl = document.getElementById("resumeMeta");
 const resumePlaybackBtn = document.getElementById("resumePlayback");
@@ -129,6 +131,7 @@ let activeViewerMeta = null;
 let activeTabPdfCandidate = null;
 let isSwitchingActiveTabPdf = false;
 let viewerStatePollTimer = null;
+let pendingFileUrlAccessHelp = false;
 const pendingAudioRequests = new Map();
 const EXTRACTION_DEBUG_KEY = "pdfExtractionDebug";
 let extractionDebugEnabled = false;
@@ -207,6 +210,9 @@ const STATUS_LABELS = {
   finished: "Finished",
   error: "Error",
 };
+
+const FILE_URL_ACCESS_ERROR_TEXT =
+  "Enable 'Allow access to file URLs' for PDF Text to Speech in chrome://extensions, then reopen this PDF tab.";
 
 function createEmptyLibraryState() {
   return {
@@ -578,7 +584,9 @@ function updateUI() {
   const isLoading = state.status === "loading";
   const trialExhausted =
     !currentSubscription?.active && hasKnownTrialRemaining() && getLiveRemainingSeconds() <= 0;
+  const showFileAccessHelp = shouldShowFileAccessHelp();
   hintEl.classList.toggle("hero-copy-alert", trialExhausted);
+  fileAccessHelpEl?.classList.toggle("hidden", !showFileAccessHelp);
   readerControlsEl.classList.toggle("hidden", !hasLoadedPdf());
   openFileBtn.classList.toggle("hidden", hasLoadedPdf());
   const hasActiveTabCandidate = Boolean(activeTabPdfCandidate);
@@ -674,11 +682,19 @@ function updateUI() {
         ? `Your ${currentLabel} subscription renews on ${endLabel}. Use Stripe to change plans or cancel renewal.`
         : `Your ${currentLabel} subscription is active. Use Stripe to change plans or cancel renewal.`;
   }
-  if (!hasLoadedPdf() && !trialExhausted) {
+  if (!hasLoadedPdf() && !trialExhausted && !showFileAccessHelp) {
     state.message = "Open a PDF in Chrome and start playback in the side panel.";
     hintEl.textContent = state.message;
   }
   updateLibraryUI();
+}
+
+function isFileUrlAccessErrorMessage(message) {
+  return String(message || "").includes(FILE_URL_ACCESS_ERROR_TEXT);
+}
+
+function shouldShowFileAccessHelp() {
+  return !hasLoadedPdf() && (pendingFileUrlAccessHelp || isFileUrlAccessErrorMessage(state.message));
 }
 
 function getHeroTitle() {
@@ -1629,6 +1645,9 @@ async function refreshActiveViewerState(options = {}) {
   try {
     const result = await sendRuntimeMessage({ type: "getActivePdfState" });
     const candidate = buildViewerCandidate(result);
+    if (candidate || result?.state) {
+      pendingFileUrlAccessHelp = false;
+    }
     if (currentFileBuffer) {
       activeViewerState = null;
       activeViewerMeta = null;
@@ -1639,13 +1658,21 @@ async function refreshActiveViewerState(options = {}) {
     }
     updateUI();
     return true;
-  } catch (_error) {
+  } catch (error) {
     clearActiveTabPdfCandidate();
+    const errorMessage = String(error?.message || "");
+    if (isFileUrlAccessErrorMessage(errorMessage)) {
+      pendingFileUrlAccessHelp = true;
+    }
     if (!currentFileBuffer) {
       activeViewerState = null;
       activeViewerMeta = null;
-      state.status = "idle";
-      state.message = "Open a PDF in Chrome and start playback in the side panel.";
+      const shouldPreserveFileAccessHelp =
+        pendingFileUrlAccessHelp && !errorMessage;
+      state.status = errorMessage || shouldPreserveFileAccessHelp ? "error" : "idle";
+      state.message =
+        errorMessage ||
+        (shouldPreserveFileAccessHelp ? FILE_URL_ACCESS_ERROR_TEXT : "Open a PDF in Chrome and start playback in the side panel.");
       state.totalPages = 0;
       state.totalChunks = 0;
       state.currentChunk = 0;
@@ -3841,6 +3868,11 @@ continueCheckoutAnnualBtn?.addEventListener("click", () => {
 
 authGoogleBtn.addEventListener("click", () => {
   void signInWithGoogle("paywall", "paywall_google_button");
+});
+
+openExtensionSettingsBtn?.addEventListener("click", () => {
+  pendingFileUrlAccessHelp = true;
+  void chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
 });
 
 activeTabPdfActionBtn?.addEventListener("click", () => {
