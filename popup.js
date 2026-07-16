@@ -1,7 +1,9 @@
 const pdfjs = window.pdfjsLib;
 const statusEl = document.getElementById("status");
 const hintEl = document.getElementById("hint");
+const trialMessageEl = document.getElementById("trialMessage");
 const fileNameLabelEl = document.getElementById("fileNameLabel");
+const currentPageMetaEl = document.getElementById("currentPageMeta");
 const heroTitleEl = document.getElementById("heroTitle");
 const fileAccessHelpEl = document.getElementById("fileAccessHelp");
 const openExtensionSettingsBtn = document.getElementById("openExtensionSettings");
@@ -17,10 +19,15 @@ const playBtn = document.getElementById("play");
 const pauseBtn = document.getElementById("pause");
 const stopBtn = document.getElementById("stop");
 const speedSelect = document.getElementById("speed");
+const readingLanguageSelect = document.getElementById("readingLanguage");
 const startPageInput = document.getElementById("startPage");
 const startFromPageBtn = document.getElementById("startFromPage");
+const jumpToCurrentPageBtn = document.getElementById("jumpToCurrentPage");
 const openFileBtn = document.getElementById("openFile");
 const replaceFileBtn = document.getElementById("replaceFile");
+const retryPlaybackBtn = document.getElementById("retryPlayback");
+const reportReadingIssueBtn = document.getElementById("reportReadingIssue");
+const readingIssuePickerEl = document.getElementById("readingIssuePicker");
 const fileInput = document.getElementById("fileInput");
 const paywallStatusEl = document.getElementById("paywallStatus");
 const paywallTrialAlertEl = document.getElementById("paywallTrialAlert");
@@ -62,6 +69,7 @@ const REMOTE_API_BASE_URL = "https://pdftext2speech.com";
 const DEVICE_TOKEN_KEY = "deviceToken";
 const TRIAL_STATE_KEY = "trialState";
 const PDF_LIBRARY_KEY = "pdfListeningLibrary";
+const READING_LANGUAGE_PREF_KEY = "pdfReadingLanguage";
 const ANALYTICS_SESSION_ID =
   `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
 const PDF_DB_NAME = "pdfListeningLibraryDb";
@@ -86,8 +94,10 @@ const state = {
 const EXTENSION_VERSION = chrome.runtime?.getManifest?.().version || "unknown";
 
 let textChunks = [];
+let preparedPages = [];
 let currentChunkIndex = 0;
 let detectedLanguage = "";
+let selectedReadingLanguage = "auto";
 let currentAudio = null;
 let currentAudioUrl = "";
 let pendingPlaybackOffsetSeconds = 0;
@@ -118,6 +128,7 @@ let trialAdjustedAfterSignIn = false;
 let authSuccessToastTimer = null;
 let authPollingTimer = null;
 let currentPdfPreviewUrl = "";
+let currentPdfPreviewTabId = null;
 let currentPdfId = "";
 let libraryState = createEmptyLibraryState();
 let isBookmarksExpanded = false;
@@ -129,9 +140,13 @@ let pendingStartPage = null;
 let activeViewerState = null;
 let activeViewerMeta = null;
 let activeTabPdfCandidate = null;
+let currentViewerSyncMeta = null;
 let isSwitchingActiveTabPdf = false;
+let isReadingIssuePickerOpen = false;
 let viewerStatePollTimer = null;
 let pendingFileUrlAccessHelp = false;
+let lastSyncedViewerAt = 0;
+let lastSyncedViewerPage = 0;
 const pendingAudioRequests = new Map();
 const EXTRACTION_DEBUG_KEY = "pdfExtractionDebug";
 let extractionDebugEnabled = false;
@@ -146,10 +161,11 @@ function getLocalTrialDayKey(date = new Date()) {
 }
 
 const INITIAL_PREPARED_PAGES = 1;
-const FIRST_CHUNK_MAX_LENGTH = 24;
-const DEFAULT_CHUNK_MAX_LENGTH = 1100;
-const STABLE_TTS_CHUNK_MAX_LENGTH = 420;
-const STABLE_TTS_MAX_LINES_PER_CHUNK = 3;
+const FIRST_CHUNK_MAX_LENGTH = 14;
+const DEFAULT_CHUNK_MAX_LENGTH = 1300;
+const SMOOTH_CHUNK_MAX_LENGTH = 1240;
+const SMOOTH_CHUNK_MAX_LINES = 14;
+const VIEWER_SYNC_THROTTLE_MS = 750;
 
 const PLAN_META = {
   monthly: {
@@ -241,6 +257,24 @@ function hashString(input) {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+function getReadingLanguageOverride() {
+  const normalized = String(selectedReadingLanguage || "auto").trim().toLowerCase();
+  return normalized && normalized !== "auto" ? normalized : "";
+}
+
+function getEffectiveTtsLanguage() {
+  return getReadingLanguageOverride() || detectedLanguage || "";
+}
+
+function getLanguageLabel(code) {
+  const normalized = String(code || "").trim().toLowerCase();
+  if (!normalized) {
+    return "Auto";
+  }
+  const option = readingLanguageSelect?.querySelector(`option[value="${normalized}"]`);
+  return option?.textContent?.trim() || normalized.toUpperCase();
+}
+
 function getCurrentPdfAnalyticsHash() {
   return currentPdfId ? `pdf_${hashString(currentPdfId)}` : "";
 }
@@ -318,10 +352,10 @@ function computeTextHash(text) {
   return (hash >>> 0).toString(36);
 }
 
-function getAudioCacheKey(text, speed = state.speed, language = detectedLanguage) {
+function getAudioCacheKey(text, speed = state.speed, language = getEffectiveTtsLanguage()) {
   const normalizedLanguage = (language || "unknown").toLowerCase();
   const normalizedSpeed = String(getEffectiveSpeed(speed));
-  return `${normalizedLanguage}:${normalizedSpeed}:${computeTextHash(text)}`;
+  return `${normalizedLanguage}:${normalizedSpeed}:localized-numbers:${computeTextHash(text)}`;
 }
 
 async function getCachedAudioPayload(key) {
@@ -463,17 +497,21 @@ function setAuthenticating(nextValue) {
   }
 }
 
-function showAuthSuccessToast() {
+function showTransientToast(message) {
   if (authSuccessToastTimer) {
     clearTimeout(authSuccessToastTimer);
     authSuccessToastTimer = null;
   }
-  authToastEl.textContent = "Successfully signed in with Google.";
+  authToastEl.textContent = message;
   authToastEl.classList.remove("hidden");
   authSuccessToastTimer = setTimeout(() => {
     authToastEl.classList.add("hidden");
     authSuccessToastTimer = null;
   }, 3200);
+}
+
+function showAuthSuccessToast() {
+  showTransientToast("Successfully signed in with Google.");
 }
 
 async function loadExtractionDebugFlag() {
@@ -580,6 +618,9 @@ function updateUI() {
     state.status === "loading" || state.status === "reading" || state.status === "paused";
   statusEl.classList.toggle("hidden", !showStatusPill);
   hintEl.textContent = state.message || " ";
+  if (trialMessageEl) {
+    trialMessageEl.textContent = getTrialMessage();
+  }
   heroTitleEl.closest(".hero-card")?.classList.toggle("is-compact", hasLoadedPdf());
   const isLoading = state.status === "loading";
   const trialExhausted =
@@ -622,6 +663,10 @@ function updateUI() {
     stopBtn.disabled = !(state.status === "reading" || state.status === "paused");
   }
   speedSelect.disabled = isLoading;
+  if (readingLanguageSelect) {
+    readingLanguageSelect.value = selectedReadingLanguage;
+    readingLanguageSelect.disabled = isLoading;
+  }
   if (startPageInput) {
     startPageInput.max = state.totalPages ? String(state.totalPages) : "";
     if (!startPageInput.value && state.totalPages > 0) {
@@ -631,6 +676,11 @@ function updateUI() {
   }
   if (startFromPageBtn) {
     startFromPageBtn.disabled = !currentFileBuffer || Boolean(activeViewerState) || isLoading;
+  }
+  const canJumpToCurrentPage = Boolean(getViewerSyncTargetMeta()) && hasLoadedPdf();
+  jumpToCurrentPageBtn?.classList.toggle("hidden", !canJumpToCurrentPage);
+  if (jumpToCurrentPageBtn) {
+    jumpToCurrentPageBtn.disabled = !canJumpToCurrentPage || isLoading;
   }
   const activePlanId = currentSubscription?.plan?.planId || "";
   if (continueCheckoutMonthlyBtn) {
@@ -652,6 +702,20 @@ function updateUI() {
     continueCheckoutAnnualBtn.disabled = isCurrentAnnual;
   }
   fileNameLabelEl.textContent = state.fileName || "No file selected";
+  if (currentPageMetaEl) {
+    const pageMetaText = getCurrentPageMetaText();
+    currentPageMetaEl.textContent = pageMetaText || "Page 1 of 1";
+    currentPageMetaEl.classList.toggle("hidden", !pageMetaText);
+  }
+  reportReadingIssueBtn?.classList.toggle("hidden", !hasLoadedPdf());
+  readingIssuePickerEl?.classList.toggle("hidden", !isReadingIssuePickerOpen || !hasLoadedPdf());
+  if (retryPlaybackBtn) {
+    const showRetry =
+      state.status === "error" &&
+      (hasLoadedPdf() || Boolean(activeTabPdfCandidate) || shouldShowFileAccessHelp());
+    retryPlaybackBtn.classList.toggle("hidden", !showRetry);
+    retryPlaybackBtn.disabled = isLoading;
+  }
   heroTitleEl.textContent = getHeroTitle();
   const planPresentation = getPlanPresentation();
   drawerPlanNameEl.textContent = planPresentation.name;
@@ -716,6 +780,28 @@ function getHeroTitle() {
     return "Finished";
   }
   return "Current PDF ready";
+}
+
+function getTrialMessage() {
+  if (currentSubscription?.active) {
+    return "Unlimited listening is active on this account.";
+  }
+  if (hasKnownTrialRemaining()) {
+    const remainingSeconds = getLiveRemainingSeconds();
+    if (remainingSeconds > 0) {
+      return `Free plan: 3 free minutes each day. ${formatRemainingSeconds(remainingSeconds)} left today.`;
+    }
+    return "Free plan: 3 free minutes each day. Come back tomorrow or unlock unlimited listening.";
+  }
+  return "Free plan: 3 free minutes each day.";
+}
+
+function getCurrentPageMetaText() {
+  if (!hasLoadedPdf() || !state.totalPages) {
+    return "";
+  }
+  const pageNumber = getPageNumberForChunk(currentChunkIndex);
+  return `Page ${Math.max(1, pageNumber)} of ${state.totalPages}`;
 }
 
 function getLiveRemainingSeconds() {
@@ -915,6 +1001,7 @@ function resetPreparedText() {
   cleanupCurrentAudio();
   clearPrefetch();
   textChunks = [];
+  preparedPages = [];
   pageStartChunkMap = [];
   pendingStartPage = null;
   currentChunkIndex = 0;
@@ -925,6 +1012,10 @@ function resetPreparedText() {
   pendingStartPlayback = false;
   activeViewerState = null;
   activeViewerMeta = null;
+  currentViewerSyncMeta = null;
+  lastSyncedViewerAt = 0;
+  lastSyncedViewerPage = 0;
+  currentPdfPreviewTabId = null;
   state.totalPages = 0;
   state.totalChunks = 0;
   state.currentChunk = 0;
@@ -1158,7 +1249,66 @@ function splitIntoSentences(text) {
   return matches ? matches.map((sentence) => sentence.trim()).filter(Boolean) : [];
 }
 
-function normalizeLineForSpeech(text) {
+function isSentenceBoundary(text) {
+  return /[.!?…:;"»)]$/u.test(String(text || "").trim());
+}
+
+function isHeadingLikeRow(text) {
+  const value = String(text || "").trim();
+  if (!value || value.length > 90) {
+    return false;
+  }
+  return value === value.toUpperCase() && /[\p{L}]/u.test(value);
+}
+
+function isStructuredRow(text) {
+  const value = String(text || "").trim();
+  if (!value) {
+    return false;
+  }
+  const numberCount = (value.match(/\d+/g) || []).length;
+  return (
+    numberCount >= 3 ||
+    /(?:€|£|\$|₽|₺|¥|TL|USD|EUR|TRY|RUB)\b/i.test(value) ||
+    /\b(?:PNR|Seat|Date|Time|Total|Amount|No\.|№)\b/i.test(value) ||
+    /^[-–•*]\s/u.test(value)
+  );
+}
+
+function buildSpeechUnitsFromRows(rowUnits) {
+  const units = [];
+  let current = "";
+
+  rowUnits.forEach((rowUnit) => {
+    const line = normalizeText(rowUnit);
+    if (!line) {
+      return;
+    }
+
+    if (isHeadingLikeRow(line) || isStructuredRow(line)) {
+      if (current) {
+        units.push(current);
+        current = "";
+      }
+      units.push(line);
+      return;
+    }
+
+    current = current ? `${current} ${line}` : line;
+    if (isSentenceBoundary(line)) {
+      units.push(current);
+      current = "";
+    }
+  });
+
+  if (current) {
+    units.push(current);
+  }
+
+  return units;
+}
+
+function finalizeChunkForSpeech(text) {
   const normalized = normalizeText(text);
   if (!normalized) {
     return "";
@@ -1211,39 +1361,45 @@ function splitLongUnit(unit, maxLength) {
   return parts;
 }
 
-function buildChunks(pages, options = {}) {
+function buildChunkPlan(pages, options = {}) {
   const chunks = [];
+  const pageMap = [];
   const useSmallFirstChunk = Boolean(options.useSmallFirstChunk);
+  const maxChunkLength = Math.min(DEFAULT_CHUNK_MAX_LENGTH, SMOOTH_CHUNK_MAX_LENGTH);
+  const maxChunkLines = Math.max(1, SMOOTH_CHUNK_MAX_LINES);
 
   function pushChunk(value) {
-    const normalizedValue = String(value || "").trim();
+    const normalizedValue = finalizeChunkForSpeech(String(value || ""));
     if (!normalizedValue) {
       return;
     }
     chunks.push(normalizedValue);
   }
 
-  pages.forEach((pageEntry) => {
+  pages.forEach((pageEntry, pageIndex) => {
     const rowUnits = (Array.isArray(pageEntry) ? pageEntry : [pageEntry])
       .map((unit) => normalizeText(unit))
       .filter(Boolean);
+    const pageNumber = pageIndex + 1;
+    const firstChunkIndexForPage = chunks.length;
     if (!rowUnits.length) {
+      pageMap[pageNumber] = null;
       return;
     }
 
-    const units = rowUnits.flatMap((rowUnit, rowIndex) => {
-      const speechLine = normalizeLineForSpeech(rowUnit);
-      if (!speechLine) {
-        return [];
-      }
+    const units = buildSpeechUnitsFromRows(rowUnits).flatMap((speechUnit, rowIndex) => {
+      const sentenceUnits = splitIntoSentences(speechUnit);
+      const normalizedUnits = sentenceUnits.length ? sentenceUnits : [speechUnit];
       const firstLimit =
         useSmallFirstChunk && chunks.length === 0 && rowIndex === 0
           ? FIRST_CHUNK_MAX_LENGTH
-          : Math.min(DEFAULT_CHUNK_MAX_LENGTH, STABLE_TTS_CHUNK_MAX_LENGTH);
-      return splitLongUnit(speechLine, firstLimit).map((part) => ({
-        text: part,
-        lineCost: 1,
-      }));
+          : maxChunkLength;
+      return normalizedUnits.flatMap((unit) =>
+        splitLongUnit(unit, firstLimit).map((part) => ({
+          text: part,
+          lineCost: 1,
+        }))
+      );
     });
     let current = "";
     let currentLineCount = 0;
@@ -1252,12 +1408,12 @@ function buildChunks(pages, options = {}) {
       const maxLength =
         useSmallFirstChunk && chunks.length === 0 && !current
           ? FIRST_CHUNK_MAX_LENGTH
-          : Math.min(DEFAULT_CHUNK_MAX_LENGTH, STABLE_TTS_CHUNK_MAX_LENGTH);
+          : maxChunkLength;
       const candidate = current ? `${current} ${unit.text}` : unit.text;
       const nextLineCount = currentLineCount + (unit.lineCost || 0);
       if (
         candidate.length > maxLength ||
-        (current && nextLineCount > STABLE_TTS_MAX_LINES_PER_CHUNK)
+        (current && nextLineCount > maxChunkLines)
       ) {
         if (current) {
           pushChunk(current);
@@ -1277,9 +1433,48 @@ function buildChunks(pages, options = {}) {
     if (current) {
       pushChunk(current);
     }
+
+    pageMap[pageNumber] = chunks.length > firstChunkIndexForPage ? firstChunkIndexForPage : null;
   });
 
-  return chunks;
+  return { chunks, pageMap };
+}
+
+function buildChunks(pages, options = {}) {
+  return buildChunkPlan(pages, options).chunks;
+}
+
+function getNumberPronunciationWord(language) {
+  const base = String(language || "").trim().toLowerCase().split(/[-_]/)[0];
+  return (
+    {
+      de: "Komma",
+      es: "coma",
+      fr: "virgule",
+      it: "virgola",
+      pt: "vírgula",
+      ru: "запятая",
+      tr: "virgül",
+      ja: "てん",
+      ko: "점",
+      zh: "点",
+      ar: "فاصلة",
+      he: "פסיק",
+      th: "จุด",
+      en: "point",
+    }[base] || "point"
+  );
+}
+
+function applySpeechTextPreferences(text, language) {
+  const normalized = normalizeText(String(text || ""));
+  if (!normalized) {
+    return "";
+  }
+  const decimalWord = getNumberPronunciationWord(language);
+  return normalized
+    .replace(/(\d)[,.](\d)/g, `$1 ${decimalWord} $2`)
+    .replace(/(\d)\s(?=\d{3}\b)/g, "$1 ");
 }
 
 function detectLanguageFromScript(text) {
@@ -1372,7 +1567,9 @@ function addPlaybackUsage(seconds) {
 }
 
 async function requestTtsBytes(text, speed = state.speed) {
-  const cacheKey = getAudioCacheKey(text, speed, detectedLanguage);
+  const ttsLanguage = getEffectiveTtsLanguage();
+  const preparedText = applySpeechTextPreferences(text, ttsLanguage);
+  const cacheKey = getAudioCacheKey(preparedText, speed, ttsLanguage);
   const cachedPayload = await getCachedAudioPayload(cacheKey).catch(() => null);
   if (cachedPayload) {
     return cachedPayload;
@@ -1386,9 +1583,9 @@ async function requestTtsBytes(text, speed = state.speed) {
     chrome.runtime.sendMessage(
       {
         type: "synthesizeSpeech",
-        text,
+        text: preparedText,
         speed: getEffectiveSpeed(speed),
-        language: detectedLanguage,
+        language: ttsLanguage,
       },
       (response) => {
         if (chrome.runtime.lastError) {
@@ -1549,6 +1746,21 @@ function hasLoadedPdf() {
   return Boolean(currentFileBuffer) || Boolean(activeViewerState);
 }
 
+function getViewerSyncTargetMeta() {
+  return currentViewerSyncMeta || activeViewerMeta || null;
+}
+
+function getLocalPreviewViewerTarget() {
+  if (!currentPdfPreviewTabId || !currentPdfPreviewUrl) {
+    return null;
+  }
+  return {
+    tabId: currentPdfPreviewTabId,
+    tabUrl: currentPdfPreviewUrl,
+    localPreview: true,
+  };
+}
+
 function deriveViewerFileName(meta = {}, viewerState = null) {
   const title = String(meta?.tabTitle || "").trim();
   if (title && title.toLowerCase().includes(".pdf")) {
@@ -1572,6 +1784,7 @@ function deriveViewerFileName(meta = {}, viewerState = null) {
 function syncRemoteViewerState(viewerState, meta = null) {
   activeViewerState = viewerState || null;
   activeViewerMeta = viewerState ? meta || activeViewerMeta : null;
+  currentViewerSyncMeta = viewerState ? meta || currentViewerSyncMeta : currentViewerSyncMeta;
   if (!viewerState) {
     return;
   }
@@ -1704,6 +1917,43 @@ async function controlActiveViewer(commandType, extra = {}) {
   updateUI();
 }
 
+async function jumpViewerToPage(pageNumber, options = {}) {
+  const safePage = clampPageNumber(pageNumber);
+  const meta = getViewerSyncTargetMeta() || getLocalPreviewViewerTarget();
+  if (!safePage || !meta?.tabId) {
+    return false;
+  }
+  const now = Date.now();
+  if (
+    !options.force &&
+    lastSyncedViewerPage === safePage &&
+    now - lastSyncedViewerAt < VIEWER_SYNC_THROTTLE_MS
+  ) {
+    return true;
+  }
+  try {
+    if (meta.localPreview) {
+      const baseUrl = String(meta.tabUrl || currentPdfPreviewUrl || "").split("#")[0];
+      await chrome.tabs.update(meta.tabId, {
+        url: `${baseUrl}#page=${safePage}`,
+        active: true,
+      });
+    } else {
+      await sendRuntimeMessage({
+        type: "controlActivePdfViewer",
+        commandType: "showPage",
+        page: safePage,
+        tabId: meta.tabId,
+      });
+    }
+    lastSyncedViewerPage = safePage;
+    lastSyncedViewerAt = now;
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
 async function importActiveViewerPdf() {
   const sourceMeta = activeTabPdfCandidate?.meta || null;
   const sourcePdfUrlHint = String(
@@ -1722,6 +1972,7 @@ async function importActiveViewerPdf() {
           sourcePdfUrlHint,
           Number(sourceMeta?.totalPages || activeViewerState?.totalPages) || 0
         );
+        currentViewerSyncMeta = sourceMeta || null;
         clearActiveTabPdfCandidate();
         return true;
       }
@@ -1779,12 +2030,16 @@ async function importActiveViewerPdf() {
   state.currentChunk = 0;
   detectedLanguage = result.state?.language || "";
   state.language = detectedLanguage;
-  textChunks = buildChunks(pages, { useSmallFirstChunk: true });
+  preparedPages = pages.map((page) => [page]);
+  const chunkPlan = buildChunkPlan(preparedPages, { useSmallFirstChunk: true });
+  textChunks = chunkPlan.chunks;
+  pageStartChunkMap = chunkPlan.pageMap;
   state.totalChunks = textChunks.length;
   preparationComplete = true;
   isPreparingText = false;
   activeViewerState = null;
   activeViewerMeta = null;
+  currentViewerSyncMeta = sourceMeta || result || null;
   clearActiveTabPdfCandidate();
   updateUI();
   return true;
@@ -1911,6 +2166,18 @@ function getActiveTabUrl() {
 function writeLocalStorage(payload) {
   return new Promise((resolve) => {
     chrome.storage.local.set(payload, () => resolve());
+  });
+}
+
+async function loadPlayerPrefs() {
+  const result = await readLocalStorage([READING_LANGUAGE_PREF_KEY]);
+  const nextLanguage = String(result?.[READING_LANGUAGE_PREF_KEY] || "auto").trim().toLowerCase();
+  selectedReadingLanguage = nextLanguage || "auto";
+}
+
+async function persistPlayerPrefs() {
+  await writeLocalStorage({
+    [READING_LANGUAGE_PREF_KEY]: selectedReadingLanguage,
   });
 }
 
@@ -2235,7 +2502,12 @@ function warmPreparedChunk(chunkIndex = 0, token = playbackToken) {
   ) {
     return;
   }
-  void prefetchNextChunk(chunkIndex, token);
+  void prefetchNextChunk(chunkIndex, token).then(() => {
+    if (token !== playbackToken) {
+      return;
+    }
+    void prefetchNextChunk(chunkIndex + 1, token);
+  });
 }
 
 function clampPageNumber(pageNumber) {
@@ -2296,10 +2568,12 @@ function startFromPage(pageNumber) {
   const chunkIndex = getChunkIndexForPage(safePage);
   if (chunkIndex !== null) {
     pendingStartPage = null;
+    void jumpViewerToPage(safePage, { force: true });
     startPlaybackFromChunk(chunkIndex);
     return;
   }
   if (isPreparingText && queuePageJump(safePage)) {
+    void jumpViewerToPage(safePage, { force: true });
     return;
   }
   setStatus("error", "That page is not ready yet. Try again in a moment.");
@@ -2708,6 +2982,16 @@ function paywallReachedMessage() {
   return "Today's free listening is over. Come back tomorrow or unlock unlimited listening.";
 }
 
+function buildExtensionPreviewUrl(pdfId, name = "", page = 1) {
+  const params = new URLSearchParams();
+  params.set("pdfId", String(pdfId || ""));
+  if (name) {
+    params.set("name", String(name));
+  }
+  const safePage = Math.max(1, Math.floor(Number(page) || 1));
+  return `${chrome.runtime.getURL("preview.html")}?${params.toString()}#page=${safePage}`;
+}
+
 async function exhaustPlaybackQuota(token = playbackToken) {
   if (token !== playbackToken) {
     return;
@@ -2723,7 +3007,8 @@ async function exhaustPlaybackQuota(token = playbackToken) {
 
 function getEffectiveSpeed(value = state.speed) {
   const baseSpeed = Number.isFinite(value) ? value : 1;
-  if (typeof detectedLanguage === "string" && detectedLanguage.toLowerCase().startsWith("ru")) {
+  const ttsLanguage = getEffectiveTtsLanguage();
+  if (typeof ttsLanguage === "string" && ttsLanguage.toLowerCase().startsWith("ru")) {
     return Math.min(2, baseSpeed * 1.2);
   }
   return baseSpeed;
@@ -2818,37 +3103,34 @@ async function openPdfDocument(arrayBuffer) {
   return loadingTask.promise;
 }
 
-async function openPdfInBrowserTab(file) {
-  if (!file) {
+async function openPdfInBrowserTab(pdfId, fileName = "") {
+  if (!pdfId) {
     return;
   }
-
-  if (currentPdfPreviewUrl) {
-    URL.revokeObjectURL(currentPdfPreviewUrl);
-  }
-  currentPdfPreviewUrl = URL.createObjectURL(file);
-  await chrome.tabs.create({ url: currentPdfPreviewUrl });
+  currentPdfPreviewUrl = buildExtensionPreviewUrl(pdfId, fileName, 1);
+  const tab = await chrome.tabs.create({ url: currentPdfPreviewUrl });
+  currentPdfPreviewTabId = Number(tab?.id) || null;
 }
 
-async function openPdfBlobInBrowserTab(buffer) {
-  if (!buffer) {
+async function openPdfBlobInBrowserTab(pdfId, fileName = "") {
+  if (!pdfId) {
     return;
   }
-  if (currentPdfPreviewUrl) {
-    URL.revokeObjectURL(currentPdfPreviewUrl);
-  }
-  currentPdfPreviewUrl = URL.createObjectURL(
-    new Blob([buffer], { type: "application/pdf" })
-  );
-  await chrome.tabs.create({ url: currentPdfPreviewUrl });
+  currentPdfPreviewUrl = buildExtensionPreviewUrl(pdfId, fileName, 1);
+  const tab = await chrome.tabs.create({ url: currentPdfPreviewUrl });
+  currentPdfPreviewTabId = Number(tab?.id) || null;
 }
 
 function appendPreparedPage(pageText, pageNumber) {
   const currentPage = Math.max(1, Number(pageNumber) || 1);
+  preparedPages[currentPage - 1] = Array.isArray(pageText)
+    ? pageText.slice()
+    : [pageText];
   const firstChunkIndexForPage = textChunks.length;
-  const nextChunks = buildChunks([pageText], {
+  const chunkPlan = buildChunkPlan([pageText], {
     useSmallFirstChunk: textChunks.length === 0,
   });
+  const nextChunks = chunkPlan.chunks;
   if (!nextChunks.length) {
     pageStartChunkMap[currentPage] = null;
     return false;
@@ -3215,11 +3497,7 @@ async function prepareSelectedFile(file) {
       buffer,
       lastOpenedAt: Date.now(),
     });
-    const openInBrowserPromise = openPdfInBrowserTab(file).catch(() => null);
-    await Promise.allSettled([
-      saveDocumentPromise,
-      persistLibraryState({ skipUi: true }),
-    ]);
+    const openInBrowserPromise = openPdfInBrowserTab(pdfId, file.name || "PDF document").catch(() => null);
     isPreparingText = true;
     preparationComplete = false;
     currentFileBuffer = buffer;
@@ -3237,7 +3515,10 @@ async function prepareSelectedFile(file) {
       totalPages: pdf.numPages,
       totalChunks: 0,
     });
-    await persistLibraryState({ skipUi: true });
+    void Promise.allSettled([
+      saveDocumentPromise,
+      persistLibraryState({ skipUi: true }),
+    ]);
     await clearResumePosition();
     void trackAnalyticsEvent("pdf_selected", {
       page_count: pdf.numPages,
@@ -3337,7 +3618,7 @@ async function openRecentPdf(id) {
   await persistLibraryState({ skipUi: true });
 
   try {
-    void openPdfBlobInBrowserTab(record.buffer).catch(() => null);
+    void openPdfBlobInBrowserTab(id, record.name || "PDF document").catch(() => null);
     isPreparingText = true;
     preparationComplete = false;
     currentFileBuffer = record.buffer;
@@ -3455,6 +3736,7 @@ async function speakCurrentChunk(token = playbackToken) {
 
   state.currentChunk = currentChunkIndex + 1;
   setStatus("loading", "Preparing audio for playback...");
+  void jumpViewerToPage(getPageNumberForChunk(currentChunkIndex));
 
   const payloadPromise = resolveChunkPayload(currentChunkIndex, token);
 
@@ -3586,7 +3868,7 @@ async function startPlayback() {
     speed: state.speed,
     page_count: state.totalPages,
     chunk_count: textChunks.length,
-    language: detectedLanguage || "unknown",
+    language: getEffectiveTtsLanguage() || "unknown",
     signed_in: authState.signedIn,
     trial_seconds_left: Number.isFinite(getLiveRemainingSeconds())
       ? getLiveRemainingSeconds()
@@ -3594,14 +3876,46 @@ async function startPlayback() {
   });
   playbackToken += 1;
   const hasWarmCurrentChunk =
-    prefetchedChunk &&
-    prefetchedChunk.index === currentChunkIndex &&
-    prefetchedChunk.speed === state.speed;
+    (prefetchedChunk &&
+      prefetchedChunk.index === currentChunkIndex &&
+      prefetchedChunk.speed === state.speed) ||
+    (prefetchPromise &&
+      prefetchedChunkIndex === currentChunkIndex &&
+      prefetchedChunkSpeed === state.speed);
   if (!hasWarmCurrentChunk) {
     clearPrefetch();
   }
   warmPreparedChunk(currentChunkIndex, playbackToken);
   await speakCurrentChunk(playbackToken);
+}
+
+async function retryPlayback() {
+  if (state.status !== "error") {
+    return;
+  }
+  if (shouldShowFileAccessHelp()) {
+    await refreshActiveViewerState();
+    return;
+  }
+  if (activeTabPdfCandidate) {
+    await switchToActiveTabPdf();
+    return;
+  }
+  if (currentFileBuffer && textChunks.length) {
+    await startPlayback();
+    return;
+  }
+  if (currentFileBuffer && currentFileBuffer.byteLength > 1) {
+    await loadImportedPdfBuffer(currentFileBuffer.slice(0), state.fileName, "", state.totalPages);
+    if (textChunks.length) {
+      await startPlayback();
+    }
+    return;
+  }
+  await refreshActiveViewerState();
+  if (activeViewerState) {
+    await startPlayback();
+  }
 }
 
 async function pausePlayback() {
@@ -3684,6 +3998,32 @@ replaceFileBtn?.addEventListener("click", () => {
   fileInput.click();
 });
 
+reportReadingIssueBtn?.addEventListener("click", () => {
+  isReadingIssuePickerOpen = !isReadingIssuePickerOpen;
+  updateUI();
+});
+
+retryPlaybackBtn?.addEventListener("click", () => {
+  void retryPlayback();
+});
+
+readingIssuePickerEl?.addEventListener("click", (event) => {
+  const reasonButton = event.target.closest("[data-reason]");
+  if (!(reasonButton instanceof HTMLElement)) {
+    return;
+  }
+  const reason = String(reasonButton.dataset.reason || "").trim();
+  void trackAnalyticsEvent("reading_quality_reported", {
+    reason,
+    page: getPageNumberForChunk(currentChunkIndex),
+    language: getEffectiveTtsLanguage() || "unknown",
+    status: state.status,
+  });
+  isReadingIssuePickerOpen = false;
+  updateUI();
+  showTransientToast("Thanks for the feedback. It helps us improve reading quality.");
+});
+
 fileInput.addEventListener("change", async (event) => {
   const [file] = event.target.files || [];
   await prepareSelectedFile(file);
@@ -3760,6 +4100,10 @@ startFromPageBtn?.addEventListener("click", () => {
   startFromPage(startPageInput?.value);
 });
 
+jumpToCurrentPageBtn?.addEventListener("click", () => {
+  void jumpViewerToPage(getPageNumberForChunk(currentChunkIndex), { force: true });
+});
+
 startPageInput?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
@@ -3773,6 +4117,24 @@ pauseBtn?.addEventListener("click", () => {
 
 stopBtn?.addEventListener("click", () => {
   void stopPlayback();
+});
+
+readingLanguageSelect?.addEventListener("change", async (event) => {
+  selectedReadingLanguage = String(event.target.value || "auto").trim().toLowerCase() || "auto";
+  await persistPlayerPrefs();
+  clearPrefetch();
+  const selectedLabel = getReadingLanguageOverride()
+    ? getLanguageLabel(selectedReadingLanguage)
+    : "Auto detect";
+  if (currentAudio || state.status === "reading" || state.status === "paused") {
+    cleanupCurrentAudio();
+    playbackToken += 1;
+    pendingPlaybackOffsetSeconds = 0;
+    setStatus("paused", `Reading language updated to ${selectedLabel}. Press Play to continue.`);
+  } else if (hasLoadedPdf()) {
+    setStatus("idle", `Reading language set to ${selectedLabel}.`);
+  }
+  updateUI();
 });
 
 speedSelect.addEventListener("change", async (event) => {
@@ -3907,7 +4269,8 @@ window.addEventListener("focus", () => {
 
 setActiveScreen("reader");
 updateUI();
-void loadLibraryState()
+void loadPlayerPrefs()
+  .then(() => loadLibraryState())
   .then(() => loadExtractionDebugFlag())
   .then(() => loadPricingPlans())
   .then(() => loadAuthState())

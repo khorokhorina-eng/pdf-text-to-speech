@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PDF Preview</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #1e1e1f;
+        --surface: #2a2a2c;
+        --ink: #f7f7f7;
+        --muted: #b9b9bd;
+        --line: rgba(255, 255, 255, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Manrope, "Segoe UI", Arial, sans-serif;
+      }
+
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 12px 16px;
+        background: rgba(30, 30, 31, 0.96);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .meta {
+        min-width: 0;
+      }
+
+      .title {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .status {
+        margin: 4px 0 0;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .viewport {
+        flex: 1;
+        display: flex;
+        justify-content: center;
+        padding: 20px;
+      }
+
+      .canvas-wrap {
+        max-width: min(960px, 100%);
+        width: 100%;
+        display: flex;
+        justify-content: center;
+      }
+
+      canvas {
+        max-width: 100%;
+        height: auto;
+        background: white;
+        box-shadow: 0 18px 42px rgba(0, 0, 0, 0.28);
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="meta">
+        <p id="title" class="title">PDF Preview</p>
+        <p id="status" class="status">Loading PDF…</p>
+      </div>
+    </header>
+    <main class="viewport">
+      <div class="canvas-wrap">
+        <canvas id="pageCanvas"></canvas>
+      </div>
+    </main>
+    <script src="vendor/pdfjs/pdf.min.js"></script>
+    <script src="preview.js"></script>
+  </body>
+  </html>

@@ -860,6 +860,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const payload =
       message.commandType === "setSpeed"
         ? { type: "setSpeed", speed: message.speed }
+        : message.commandType === "showPage"
+        ? { type: "showPage", page: message.page }
         : { type: message.commandType };
     sendMessageToActivePdfTab(payload, { tabId: message.tabId })
       .then((result) => sendResponse({ ok: true, ...result }))

@@ -66,6 +66,17 @@ function setStatus(status, message = "") {
   sendStateUpdate();
 }
 
+function showViewerPage(pageNumber) {
+  const safePage = Math.max(1, Math.floor(Number(pageNumber) || 1));
+  const targetHash = `page=${safePage}`;
+  try {
+    const baseUrl = window.location.href.split("#")[0];
+    window.location.replace(`${baseUrl}#${targetHash}`);
+  } catch (_error) {
+    // Best effort only for viewer sync.
+  }
+}
+
 function getLiveRemainingSeconds() {
   if (Number.isFinite(sessionRemainingSeconds)) {
     return Math.max(0, sessionRemainingSeconds);
@@ -1218,6 +1229,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "setSpeed") {
     setSpeed(message.speed).then(() => sendResponse({ state }));
     return true;
+  }
+
+  if (message.type === "showPage") {
+    showViewerPage(message.page);
+    sendResponse({ state });
+    return false;
   }
 
   sendResponse({ state });

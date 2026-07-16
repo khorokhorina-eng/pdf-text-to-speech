@@ -64,6 +64,7 @@
             <p class="eyebrow">PDF Listening Player</p>
             <h1 id="heroTitle" class="hero-title">Ready to Listen</h1>
             <p id="hint" class="hero-copy">Open a PDF in Chrome and start playback in the side panel.</p>
+            <p id="trialMessage" class="hero-subcopy">Free plan: 3 free minutes each day.</p>
             <div id="fileAccessHelp" class="file-access-help hidden">
               <button id="openExtensionSettings" class="secondary-action" type="button">
                 Open extension settings
@@ -85,6 +86,7 @@
               <div class="file-meta">
                 <div class="file-meta-topline">
                   <p class="file-meta-label">Current PDF</p>
+                  <p id="currentPageMeta" class="file-meta-chip hidden">Page 1 of 1</p>
                 </div>
                 <p id="fileNameLabel" class="file-meta-value">No file selected</p>
               </div>
@@ -102,6 +104,29 @@
                 </label>
               </div>
 
+              <div class="player-settings-row">
+                <label class="speed-field">
+                  <span class="file-meta-label">Reading language</span>
+                  <select id="readingLanguage" aria-label="Reading language">
+                    <option value="auto" selected>Auto detect</option>
+                    <option value="en">English</option>
+                    <option value="es">Spanish</option>
+                    <option value="ru">Russian</option>
+                    <option value="de">German</option>
+                    <option value="fr">French</option>
+                    <option value="it">Italian</option>
+                    <option value="pt">Portuguese</option>
+                    <option value="tr">Turkish</option>
+                    <option value="ja">Japanese</option>
+                    <option value="ko">Korean</option>
+                    <option value="zh">Chinese</option>
+                    <option value="ar">Arabic</option>
+                    <option value="he">Hebrew</option>
+                    <option value="th">Thai</option>
+                  </select>
+                </label>
+              </div>
+
               <div class="page-jump-row">
                 <label class="page-jump-field">
                   <span class="file-meta-label">Page</span>
@@ -110,7 +135,24 @@
                 <button id="startFromPage" class="secondary-action page-jump-btn" type="button">Play from page</button>
               </div>
 
+              <button id="jumpToCurrentPage" class="secondary-action jump-current-page-btn hidden" type="button">
+                Jump to current page
+              </button>
+
               <button id="replaceFile" class="secondary-action replace-file-btn replace-file-btn-large" type="button">Open another PDF</button>
+              <div id="playerActionRow" class="player-action-row">
+                <button id="retryPlayback" class="link-action hidden" type="button">Retry</button>
+                <button id="reportReadingIssue" class="link-action hidden" type="button">Reading sounds wrong?</button>
+              </div>
+              <section id="readingIssuePicker" class="reason-picker hidden" aria-live="polite">
+                <p class="reason-picker-label">What went wrong?</p>
+                <div class="reason-picker-grid">
+                  <button class="reason-chip" data-reason="wrong_language" type="button">Wrong language</button>
+                  <button class="reason-chip" data-reason="sentence_cut_off" type="button">Sentence cut off</button>
+                  <button class="reason-chip" data-reason="skipped_text" type="button">Skipped text</button>
+                  <button class="reason-chip" data-reason="stuck_on_preparing" type="button">Stuck on preparing</button>
+                </div>
+              </section>
             </div>
           </section>
 
