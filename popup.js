@@ -147,6 +147,9 @@ let viewerStatePollTimer = null;
 let pendingFileUrlAccessHelp = false;
 let lastSyncedViewerAt = 0;
 let lastSyncedViewerPage = 0;
+let currentPdfSource = "unknown";
+let currentViewerMode = "none";
+let lastTrackedPdfSourceSignature = "";
 const pendingAudioRequests = new Map();
 const EXTRACTION_DEBUG_KEY = "pdfExtractionDebug";
 let extractionDebugEnabled = false;
@@ -282,12 +285,72 @@ function getCurrentPdfAnalyticsHash() {
 function buildAnalyticsContext() {
   const context = {
     extension_version: EXTENSION_VERSION,
+    pdf_source: currentPdfSource || "unknown",
+    viewer_mode: currentViewerMode || "none",
   };
   const pdfIdHash = getCurrentPdfAnalyticsHash();
   if (pdfIdHash) {
     context.pdf_id_hash = pdfIdHash;
   }
   return context;
+}
+
+function classifyPdfSourceFromUrl(rawUrl = "") {
+  const value = String(rawUrl || "").trim();
+  if (!value) {
+    return "unknown";
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "file:") {
+      return "file_tab";
+    }
+    if (parsed.hostname === "drive.google.com") {
+      return "drive_viewer";
+    }
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return "web_pdf_tab";
+    }
+  } catch (_error) {
+    return "unknown";
+  }
+  return "unknown";
+}
+
+function setCurrentPdfSource(source = "unknown", viewerMode = "none") {
+  currentPdfSource = String(source || "unknown").trim() || "unknown";
+  currentViewerMode = String(viewerMode || "none").trim() || "none";
+}
+
+function getPdfAnalyticsMeta(overrides = {}) {
+  return {
+    pdf_source: currentPdfSource || "unknown",
+    viewer_mode: currentViewerMode || "none",
+    ...(overrides && typeof overrides === "object" ? overrides : {}),
+  };
+}
+
+function buildPdfSourceSignature(source, viewerMode, fileName, pdfUrl) {
+  return [
+    String(source || "unknown"),
+    String(viewerMode || "none"),
+    String(fileName || "").trim().toLowerCase(),
+    String(pdfUrl || "").trim().toLowerCase(),
+  ].join("|");
+}
+
+function trackPdfSourceDetected(source, viewerMode, meta = {}) {
+  const signature = buildPdfSourceSignature(source, viewerMode, meta.fileName, meta.pdfUrl);
+  if (!signature || signature === lastTrackedPdfSourceSignature) {
+    return;
+  }
+  lastTrackedPdfSourceSignature = signature;
+  void trackAnalyticsEvent("pdf_source_detected", {
+    pdf_source: source || "unknown",
+    viewer_mode: viewerMode || "none",
+    page_count: Number(meta.totalPages) || 0,
+    signed_in: authState.signedIn,
+  });
 }
 
 function openPdfLibraryDb() {
@@ -1241,6 +1304,7 @@ function maybeTrackExtractionSuspect({
     used_column_split: usedColumnSplit,
     signed_in: authState.signedIn,
     total_pages: state.totalPages || 0,
+    ...getPdfAnalyticsMeta(),
   });
 }
 
@@ -1788,6 +1852,10 @@ function syncRemoteViewerState(viewerState, meta = null) {
   if (!viewerState) {
     return;
   }
+  setCurrentPdfSource(
+    classifyPdfSourceFromUrl(String(meta?.pdfUrl || meta?.tabUrl || viewerState?.debug?.pdfUrl || "")),
+    "active_tab"
+  );
   state.status = viewerState.status || "idle";
   state.message = viewerState.message || "";
   state.totalPages = Number(viewerState.totalPages) || 0;
@@ -1823,9 +1891,11 @@ function buildViewerCandidate(result) {
   }
   const fileName = deriveViewerFileName(result, result.state || null);
   const pdfUrl = String(result.pdfUrl || result.state?.debug?.pdfUrl || result.tabUrl || "").trim();
+  const pdfSource = classifyPdfSourceFromUrl(pdfUrl);
   return {
     fileName,
     pdfUrl,
+    pdfSource,
     totalPages: Number(result.totalPages || result.state?.totalPages) || 0,
     state: result.state,
     meta: result,
@@ -1858,6 +1928,9 @@ async function refreshActiveViewerState(options = {}) {
   try {
     const result = await sendRuntimeMessage({ type: "getActivePdfState" });
     const candidate = buildViewerCandidate(result);
+    if (candidate) {
+      trackPdfSourceDetected(candidate.pdfSource, "active_tab", candidate);
+    }
     if (candidate || result?.state) {
       pendingFileUrlAccessHelp = false;
     }
@@ -1956,6 +2029,15 @@ async function jumpViewerToPage(pageNumber, options = {}) {
 
 async function importActiveViewerPdf() {
   const sourceMeta = activeTabPdfCandidate?.meta || null;
+  const inferredSource = activeTabPdfCandidate?.pdfSource || classifyPdfSourceFromUrl(
+    String(
+      sourceMeta?.pdfUrl ||
+      sourceMeta?.state?.debug?.pdfUrl ||
+      activeViewerMeta?.tabUrl ||
+      activeViewerState?.debug?.pdfUrl ||
+      ""
+    ).trim()
+  );
   const sourcePdfUrlHint = String(
     sourceMeta?.pdfUrl || sourceMeta?.state?.debug?.pdfUrl || activeViewerMeta?.tabUrl || activeViewerState?.debug?.pdfUrl || ""
   ).trim();
@@ -1972,6 +2054,7 @@ async function importActiveViewerPdf() {
           sourcePdfUrlHint,
           Number(sourceMeta?.totalPages || activeViewerState?.totalPages) || 0
         );
+        setCurrentPdfSource(inferredSource, "active_tab");
         currentViewerSyncMeta = sourceMeta || null;
         clearActiveTabPdfCandidate();
         return true;
@@ -2010,6 +2093,7 @@ async function importActiveViewerPdf() {
       sourcePdfUrl,
       Number(result.totalPages) || 0
     );
+    setCurrentPdfSource(inferredSource, "active_tab");
     clearActiveTabPdfCandidate();
     return true;
   }
@@ -2019,6 +2103,7 @@ async function importActiveViewerPdf() {
   }
   resetPreparedText();
   currentFileBuffer = new ArrayBuffer(1);
+  setCurrentPdfSource(inferredSource, "active_tab");
   const sourceName = deriveViewerFileName(result, result.state || null);
   state.fileName = sourceName;
   currentPdfId = createPdfIdFromMeta({
@@ -2049,6 +2134,9 @@ async function loadImportedPdfBuffer(buffer, sourceName, sourcePdfUrl = "", tota
   const runId = ++activePreparationRunId;
   resetPreparedText();
   currentFileBuffer = buffer;
+  if (currentPdfSource === "unknown") {
+    setCurrentPdfSource(sourcePdfUrl ? classifyPdfSourceFromUrl(sourcePdfUrl) : "library", "controlled_preview");
+  }
   state.fileName = sourceName || "PDF document";
   setStatus("loading", "Loading your PDF...");
   currentPdfId = createPdfIdFromMeta({
@@ -3471,6 +3559,7 @@ async function prepareSelectedFile(file) {
 
   const runId = ++activePreparationRunId;
   resetPreparedText();
+  setCurrentPdfSource("upload", "controlled_preview");
   state.fileName = file.name || "";
   setStatus("loading", "Loading your PDF...");
 
@@ -3524,6 +3613,12 @@ async function prepareSelectedFile(file) {
       page_count: pdf.numPages,
       file_size_kb: Math.max(1, Math.round((file.size || 0) / 1024)),
       signed_in: authState.signedIn,
+      ...getPdfAnalyticsMeta(),
+    });
+    trackPdfSourceDetected("upload", "controlled_preview", {
+      fileName: file.name || "PDF document",
+      totalPages: pdf.numPages,
+      pdfUrl: "",
     });
     let firstChunkReady = false;
     const initialPagesEnd = Math.min(INITIAL_PREPARED_PAGES, pdf.numPages);
@@ -3604,6 +3699,7 @@ async function openRecentPdf(id) {
 
   const runId = ++activePreparationRunId;
   resetPreparedText();
+  setCurrentPdfSource("library", "controlled_preview");
   currentPdfId = id;
   state.fileName = record.name || "PDF document";
   setStatus("loading", "Loading your PDF...");
@@ -3628,6 +3724,11 @@ async function openRecentPdf(id) {
     }
     state.totalPages = pdf.numPages;
     state.currentChunk = 0;
+    trackPdfSourceDetected("library", "controlled_preview", {
+      fileName: record.name || "PDF document",
+      totalPages: pdf.numPages,
+      pdfUrl: "",
+    });
     updateRecentEntry({
       id,
       name: record.name || "PDF document",
@@ -3873,6 +3974,7 @@ async function startPlayback() {
     trial_seconds_left: Number.isFinite(getLiveRemainingSeconds())
       ? getLiveRemainingSeconds()
       : -1,
+    ...getPdfAnalyticsMeta(),
   });
   playbackToken += 1;
   const hasWarmCurrentChunk =
@@ -4018,6 +4120,7 @@ readingIssuePickerEl?.addEventListener("click", (event) => {
     page: getPageNumberForChunk(currentChunkIndex),
     language: getEffectiveTtsLanguage() || "unknown",
     status: state.status,
+    ...getPdfAnalyticsMeta(),
   });
   isReadingIssuePickerOpen = false;
   updateUI();
