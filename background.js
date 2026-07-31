@@ -9,7 +9,7 @@ const BILLING_ENDPOINTS = [
   REMOTE_API_BASE_URL,
 ];
 
-const DEFAULT_FREE_TRIAL_SECONDS = 300;
+const DEFAULT_FREE_TRIAL_SECONDS = 600;
 const DEFAULT_MIN_FREE_PLAYBACK_START_SECONDS = 0;
 const TTS_REQUEST_TIMEOUT_MS = 25000;
 const DEVICE_TOKEN_KEY = "deviceToken";
@@ -117,6 +117,7 @@ async function readUsageSeconds() {
       [TRIAL_STATE_KEY]: {
         deviceToken: trialState.deviceToken || (await getOrCreateDeviceToken()),
         remainingSeconds: DEFAULT_FREE_TRIAL_SECONDS,
+        freeTrialSeconds: DEFAULT_FREE_TRIAL_SECONDS,
         trialDayKey: currentTrialDayKey,
         updatedAt: Date.now(),
       },
@@ -126,7 +127,27 @@ async function readUsageSeconds() {
   if (!Number.isFinite(Number(trialState.remainingSeconds))) {
     return null;
   }
-  return Math.max(0, Math.floor(Number(trialState.remainingSeconds)));
+  const storedRemainingSeconds = Math.max(0, Math.floor(Number(trialState.remainingSeconds)));
+  const storedFreeTrialSeconds = Number.isFinite(Number(trialState.freeTrialSeconds))
+    ? Math.max(0, Math.floor(Number(trialState.freeTrialSeconds)))
+    : 300;
+  if (storedFreeTrialSeconds < DEFAULT_FREE_TRIAL_SECONDS) {
+    const migratedRemainingSeconds = Math.min(
+      DEFAULT_FREE_TRIAL_SECONDS,
+      storedRemainingSeconds + (DEFAULT_FREE_TRIAL_SECONDS - storedFreeTrialSeconds)
+    );
+    await writeStorage({
+      [TRIAL_STATE_KEY]: {
+        deviceToken: trialState.deviceToken || (await getOrCreateDeviceToken()),
+        remainingSeconds: migratedRemainingSeconds,
+        freeTrialSeconds: DEFAULT_FREE_TRIAL_SECONDS,
+        trialDayKey: currentTrialDayKey,
+        updatedAt: Date.now(),
+      },
+    });
+    return migratedRemainingSeconds;
+  }
+  return storedRemainingSeconds;
 }
 
 async function writeUsageSeconds(value, options = {}) {
@@ -150,6 +171,7 @@ async function writeUsageSeconds(value, options = {}) {
     [TRIAL_STATE_KEY]: {
       deviceToken,
       remainingSeconds: nextSeconds,
+      freeTrialSeconds: DEFAULT_FREE_TRIAL_SECONDS,
       trialDayKey: getTrialDayKey(),
       updatedAt: Date.now(),
     },
@@ -309,6 +331,8 @@ async function getSubscriptionStatus(forceRefresh = false) {
   const deviceToken = await getOrCreateDeviceToken();
   const now = Date.now();
   const localRemainingSeconds = await readUsageSeconds();
+  const localTrialFloorApplies =
+    Number.isFinite(localRemainingSeconds) && localRemainingSeconds > 0;
 
   if (
     !forceRefresh &&
@@ -316,7 +340,7 @@ async function getSubscriptionStatus(forceRefresh = false) {
     now - subscriptionCache.timestamp < SUBSCRIPTION_CACHE_MS
   ) {
     const cachedFloorApplies =
-      !subscriptionCache.signedInTrial && Number.isFinite(localRemainingSeconds);
+      !subscriptionCache.signedInTrial && localTrialFloorApplies;
     return {
       deviceToken,
       active: subscriptionCache.active,
@@ -343,7 +367,7 @@ async function getSubscriptionStatus(forceRefresh = false) {
   const isSignedInTrial = Boolean(data.signedIn || data.email);
   const localFloorApplies =
     isTrialState &&
-    Number.isFinite(localRemainingSeconds) &&
+    localTrialFloorApplies &&
     !isSignedInTrial;
   const effectiveRemainingSeconds = localFloorApplies
     ? Math.min(serverRemainingSeconds, localRemainingSeconds)

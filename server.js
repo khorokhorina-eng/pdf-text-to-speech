@@ -45,7 +45,7 @@ const OPENAI_TTS_MODEL = process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts";
 const OPENAI_TTS_VOICE = process.env.OPENAI_TTS_VOICE || "alloy";
 const FREE_TRIAL_SECONDS = Math.max(
   1,
-  Number(process.env.FREE_TRIAL_SECONDS || 180)
+  Number(process.env.FREE_TRIAL_SECONDS || 600)
 );
 const MIN_FREE_PLAYBACK_START_SECONDS = Math.max(
   0,
@@ -731,6 +731,7 @@ function getOrCreateDeviceUsage(state, deviceToken, timeZone = "UTC") {
   if (!state.deviceUsageByToken[deviceToken]) {
     state.deviceUsageByToken[deviceToken] = {
       remainingSeconds: FREE_TRIAL_SECONDS,
+      freeTrialSeconds: FREE_TRIAL_SECONDS,
       trialDayKey: currentTrialDayKey,
       timeZone,
       createdAt: nowIso(),
@@ -742,6 +743,7 @@ function getOrCreateDeviceUsage(state, deviceToken, timeZone = "UTC") {
   usage.timeZone = timeZone || usage.timeZone || "UTC";
   if (usage.trialDayKey !== currentTrialDayKey) {
     usage.remainingSeconds = FREE_TRIAL_SECONDS;
+    usage.freeTrialSeconds = FREE_TRIAL_SECONDS;
     usage.trialDayKey = currentTrialDayKey;
     usage.timeZone = timeZone || usage.timeZone || "UTC";
     usage.updatedAt = nowIso();
@@ -757,11 +759,24 @@ function getOrCreateDeviceUsage(state, deviceToken, timeZone = "UTC") {
     usage.remainingSeconds = fallbackSeconds;
     usage.updatedAt = nowIso();
   }
+  const storedFreeTrialSeconds = Number.isFinite(Number(usage.freeTrialSeconds))
+    ? Math.max(1, Math.floor(Number(usage.freeTrialSeconds)))
+    : 300;
+  if (storedFreeTrialSeconds < FREE_TRIAL_SECONDS) {
+    usage.remainingSeconds = Math.min(
+      FREE_TRIAL_SECONDS,
+      Math.max(0, Math.floor(Number(usage.remainingSeconds))) +
+        (FREE_TRIAL_SECONDS - storedFreeTrialSeconds)
+    );
+    usage.freeTrialSeconds = FREE_TRIAL_SECONDS;
+    usage.updatedAt = nowIso();
+  }
   usage.remainingSeconds = Math.min(
     FREE_TRIAL_SECONDS,
     Math.max(0, Math.floor(Number(usage.remainingSeconds)))
   );
   usage.minutesLeft = Math.ceil(usage.remainingSeconds / 60);
+  usage.freeTrialSeconds = usage.freeTrialSeconds || FREE_TRIAL_SECONDS;
   usage.trialDayKey = usage.trialDayKey || currentTrialDayKey;
   usage.timeZone = usage.timeZone || timeZone || "UTC";
   usage.updatedAt = usage.updatedAt || nowIso();

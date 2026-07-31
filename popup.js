@@ -1,7 +1,6 @@
 const pdfjs = window.pdfjsLib;
 const statusEl = document.getElementById("status");
 const hintEl = document.getElementById("hint");
-const trialMessageEl = document.getElementById("trialMessage");
 const fileNameLabelEl = document.getElementById("fileNameLabel");
 const currentPageMetaEl = document.getElementById("currentPageMeta");
 const heroTitleEl = document.getElementById("heroTitle");
@@ -667,9 +666,9 @@ function getPlanPresentation() {
     name: "Free Listening",
     meta:
       getLiveRemainingSeconds() > 0
-        ? `3 free minutes each day. ${formatRemainingSeconds(getLiveRemainingSeconds())} left today.`
+        ? `10 free minutes each day. ${formatRemainingSeconds(getLiveRemainingSeconds())} left today.`
         : hasKnownTrialRemaining()
-        ? "3 free minutes each day. Come back tomorrow or unlock unlimited listening."
+        ? "10 free minutes each day. Come back tomorrow or unlock unlimited listening."
         : "Checking today's listening access...",
   };
 }
@@ -681,9 +680,6 @@ function updateUI() {
     state.status === "loading" || state.status === "reading" || state.status === "paused";
   statusEl.classList.toggle("hidden", !showStatusPill);
   hintEl.textContent = state.message || " ";
-  if (trialMessageEl) {
-    trialMessageEl.textContent = getTrialMessage();
-  }
   heroTitleEl.closest(".hero-card")?.classList.toggle("is-compact", hasLoadedPdf());
   const isLoading = state.status === "loading";
   const trialExhausted =
@@ -843,20 +839,6 @@ function getHeroTitle() {
     return "Finished";
   }
   return "Current PDF ready";
-}
-
-function getTrialMessage() {
-  if (currentSubscription?.active) {
-    return "Unlimited listening is active on this account.";
-  }
-  if (hasKnownTrialRemaining()) {
-    const remainingSeconds = getLiveRemainingSeconds();
-    if (remainingSeconds > 0) {
-      return `Free plan: 3 free minutes each day. ${formatRemainingSeconds(remainingSeconds)} left today.`;
-    }
-    return "Free plan: 3 free minutes each day. Come back tomorrow or unlock unlimited listening.";
-  }
-  return "Free plan: 3 free minutes each day.";
 }
 
 function getCurrentPageMetaText() {
@@ -1876,13 +1858,19 @@ function hasUsableViewerState(viewerState) {
     return true;
   }
   const message = String(viewerState.message || "").toLowerCase();
-  if (!message) {
+  if (
+    message.includes("unable to access pdf text") ||
+    message.includes("invalid pdf structure") ||
+    message.includes("no selectable text found")
+  ) {
     return false;
   }
-  if (message.includes("unable to access pdf text") || message.includes("invalid pdf structure")) {
-    return false;
-  }
-  return viewerState.status === "idle" || viewerState.status === "paused" || viewerState.status === "reading";
+  return (
+    viewerState.status === "loading" ||
+    viewerState.status === "idle" ||
+    viewerState.status === "paused" ||
+    viewerState.status === "reading"
+  );
 }
 
 function buildViewerCandidate(result) {
@@ -2180,7 +2168,20 @@ async function loadImportedPdfBuffer(buffer, sourceName, sourcePdfUrl = "", tota
   }
   warmPreparedChunk(0, playbackToken);
   if (pdf.numPages > initialPagesEnd) {
-    continuePreparingRemainingPages(pdf, initialPagesEnd + 1, runId);
+    let resumedFromLaterChunk = false;
+    continuePreparingRemainingPages(pdf, initialPagesEnd + 1, runId, () => {
+      if (resumedFromLaterChunk) {
+        return;
+      }
+      resumedFromLaterChunk = true;
+      warmPreparedChunk(0, playbackToken);
+      if (pendingStartPlayback) {
+        pendingStartPlayback = false;
+        playbackToken += 1;
+        warmPreparedChunk(0, playbackToken);
+        void speakCurrentChunk(playbackToken);
+      }
+    });
     return;
   }
   finishPreparation(runId);
@@ -2689,6 +2690,7 @@ async function persistLocalTrialFloor(remainingSeconds) {
     [TRIAL_STATE_KEY]: {
       deviceToken,
       remainingSeconds: safeSeconds,
+      freeTrialSeconds: 600,
       trialDayKey: getLocalTrialDayKey(),
       updatedAt: Date.now(),
     },
@@ -2913,7 +2915,7 @@ async function loadSubscriptionStatus() {
       setPaywallStatus(
         authState.signedIn
           ? "Choose a plan to continue."
-          : "Free plan: 3 free minutes each day. Choose a plan and sign in before checkout."
+          : "Free plan: 10 free minutes each day. Choose a plan and sign in before checkout."
       );
     }
     updatePaywallCopy();
@@ -3511,9 +3513,9 @@ function finishPreparation(runId) {
   }
 }
 
-function continuePreparingRemainingPages(pdf, startPage, runId) {
+function continuePreparingRemainingPages(pdf, startPage, runId, onChunkReady) {
   void (async () => {
-    const result = await preparePdfPages(pdf, startPage, pdf.numPages, runId);
+    const result = await preparePdfPages(pdf, startPage, pdf.numPages, runId, onChunkReady);
     if (result.cancelled) {
       return;
     }
@@ -3665,7 +3667,20 @@ async function prepareSelectedFile(file) {
         totalChunks: textChunks.length,
       });
       await persistLibraryState();
-      continuePreparingRemainingPages(pdf, initialPagesEnd + 1, runId);
+      let resumedFromLaterChunk = false;
+      continuePreparingRemainingPages(pdf, initialPagesEnd + 1, runId, () => {
+        if (resumedFromLaterChunk) {
+          return;
+        }
+        resumedFromLaterChunk = true;
+        warmPreparedChunk(0, playbackToken);
+        if (pendingStartPlayback) {
+          pendingStartPlayback = false;
+          playbackToken += 1;
+          warmPreparedChunk(0, playbackToken);
+          void speakCurrentChunk(playbackToken);
+        }
+      });
       return;
     }
 
@@ -3772,7 +3787,24 @@ async function openRecentPdf(id) {
         totalChunks: textChunks.length,
       });
       await persistLibraryState();
-      continuePreparingRemainingPages(pdf, initialPagesEnd + 1, runId);
+      let resumedFromLaterChunk = false;
+      continuePreparingRemainingPages(pdf, initialPagesEnd + 1, runId, () => {
+        if (resumedFromLaterChunk) {
+          return;
+        }
+        resumedFromLaterChunk = true;
+        warmPreparedChunk(shouldResume ? currentChunkIndex : 0, playbackToken);
+        if (shouldResume) {
+          void startPlayback();
+          return;
+        }
+        if (pendingStartPlayback) {
+          pendingStartPlayback = false;
+          playbackToken += 1;
+          warmPreparedChunk(0, playbackToken);
+          void speakCurrentChunk(playbackToken);
+        }
+      });
       return;
     }
 

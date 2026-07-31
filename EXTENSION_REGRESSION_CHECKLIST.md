@@ -27,11 +27,12 @@
 ## Trial
 
 1. Verify daily limit is shown correctly.
-2. Verify `3 free minutes each day` is visible before paywall.
+2. Verify there is no paid warning on the first screen before trial is exhausted.
 3. Exhaust the limit.
 4. Verify trial-ended message is clear.
 5. Verify the message explains:
    - return tomorrow
+6. Verify free listening allows up to `10 minutes each day`.
    - or upgrade now
 
 ## Billing
