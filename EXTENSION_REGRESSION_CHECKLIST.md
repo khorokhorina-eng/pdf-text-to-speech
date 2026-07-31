@@ -8,9 +8,10 @@
 4. Verify first audio starts quickly enough and does not re-import the same browser PDF on every `Play`.
 5. Pause.
 6. Resume.
-7. Start from a specific page.
-8. Verify `Page X of Y` stays in sync with playback.
-9. Verify `Jump to current page` moves the viewer to the current page.
+7. Use `Start over` and verify playback restarts from the beginning.
+8. Start from a specific page.
+9. Verify `Page X of Y` stays in sync with playback.
+10. Verify `Jump to current page` moves the viewer to the current page.
 
 ## Open Paths
 

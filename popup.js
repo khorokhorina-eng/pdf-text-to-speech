@@ -9,6 +9,7 @@ const openExtensionSettingsBtn = document.getElementById("openExtensionSettings"
 const resumeSectionEl = document.getElementById("resumeSection");
 const resumeMetaEl = document.getElementById("resumeMeta");
 const resumePlaybackBtn = document.getElementById("resumePlayback");
+const startFromBeginningBtn = document.getElementById("startFromBeginning");
 const bookmarksSectionEl = document.getElementById("bookmarksSection");
 const bookmarkListEl = document.getElementById("bookmarkList");
 const bookmarkContentEl = document.getElementById("bookmarkContent");
@@ -715,6 +716,9 @@ function updateUI() {
   }
   playBtn.classList.toggle("is-loading", isLoading);
   playBtn.setAttribute("aria-busy", isLoading ? "true" : "false");
+  if (startFromBeginningBtn) {
+    startFromBeginningBtn.disabled = !hasLoadedPdf() || isLoading;
+  }
   if (pauseBtn) {
     pauseBtn.disabled = !(state.status === "reading" || state.status === "paused");
   }
@@ -3706,7 +3710,7 @@ async function prepareSelectedFile(file) {
   }
 }
 
-async function openRecentPdf(id) {
+async function openRecentPdf(id, options = {}) {
   const record = await getPdfDocument(id);
   if (!record?.buffer) {
     setStatus("error", "This PDF is no longer available in your local library.");
@@ -3714,6 +3718,7 @@ async function openRecentPdf(id) {
   }
   const resumeState = libraryState.resumes?.[id];
   const shouldResume =
+    options.resume !== false &&
     resumeState && Number.isFinite(resumeState.chunkIndex) && resumeState.chunkIndex > 0;
 
   const runId = ++activePreparationRunId;
@@ -4185,6 +4190,20 @@ resumePlaybackBtn?.addEventListener("click", () => {
   pendingPlaybackOffsetSeconds = Math.max(0, Number(resume.offsetSeconds) || 0);
   state.currentChunk = currentChunkIndex;
   clearPrefetch();
+  void startPlayback();
+});
+
+startFromBeginningBtn?.addEventListener("click", () => {
+  const resumeId = resumePlaybackBtn.dataset.resumeId || "";
+  if (resumeId && resumeId !== currentPdfId) {
+    void openRecentPdf(resumeId, { resume: false });
+    return;
+  }
+  currentChunkIndex = 0;
+  pendingPlaybackOffsetSeconds = 0;
+  state.currentChunk = 0;
+  clearPrefetch();
+  void clearResumePosition();
   void startPlayback();
 });
 
