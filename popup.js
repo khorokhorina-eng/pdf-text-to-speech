@@ -2043,6 +2043,8 @@ async function importActiveViewerPdf() {
           Number(sourceMeta?.totalPages || activeViewerState?.totalPages) || 0
         );
         setCurrentPdfSource(inferredSource, "active_tab");
+        activeViewerState = null;
+        activeViewerMeta = null;
         currentViewerSyncMeta = sourceMeta || null;
         clearActiveTabPdfCandidate();
         return true;
@@ -2082,6 +2084,8 @@ async function importActiveViewerPdf() {
       Number(result.totalPages) || 0
     );
     setCurrentPdfSource(inferredSource, "active_tab");
+    activeViewerState = null;
+    activeViewerMeta = null;
     clearActiveTabPdfCandidate();
     return true;
   }
@@ -3965,7 +3969,7 @@ async function speakCurrentChunk(token = playbackToken) {
 }
 
 async function startPlayback() {
-  if (activeViewerState) {
+  if (activeViewerState && !currentFileBuffer && !textChunks.length) {
     try {
       await importActiveViewerPdf();
     } catch (error) {

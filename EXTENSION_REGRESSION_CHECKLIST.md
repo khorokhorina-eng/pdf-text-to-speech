@@ -5,7 +5,7 @@
 1. Open a small PDF.
 2. Verify the file is recognized.
 3. Start listening.
-4. Verify first audio starts quickly enough.
+4. Verify first audio starts quickly enough and does not re-import the same browser PDF on every `Play`.
 5. Pause.
 6. Resume.
 7. Start from a specific page.
@@ -54,8 +54,23 @@
 3. Saved sections still appear after switching to another PDF.
 4. Two-column PDFs still read in a sane order.
 5. Reading language override changes playback language without breaking start/resume.
-6. `Reading sounds wrong?` opens the structured picker and sends analytics without opening mail.
-7. Uploaded PDF preview keeps page jumps working.
+6. Language list includes the main active-market options:
+   - English
+   - Spanish
+   - Russian
+   - German
+   - Portuguese (Brazil)
+   - Turkish
+   - Japanese
+   - Korean
+   - Hindi
+   - Bengali
+   - Chinese (Simplified)
+   - Chinese (Traditional)
+   - Thai
+   - Danish
+7. `Reading sounds wrong?` opens the structured picker and sends analytics without opening mail.
+8. Uploaded PDF preview keeps page jumps working.
 
 ## Release Gate
 
