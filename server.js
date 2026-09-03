@@ -528,11 +528,11 @@ function subscriptionBelongsToThisProduct(subscription) {
   if (!subscription || typeof subscription !== "object") {
     return false;
   }
-  if (subscription.metadata?.productSlug === PRODUCT_SLUG) {
-    return true;
-  }
-  return Boolean(
-    subscription.items?.data?.some((item) => isRelevantStripePriceId(item?.price?.id || ""))
+  return (
+    subscription.metadata?.productSlug === PRODUCT_SLUG &&
+    Boolean(
+      subscription.items?.data?.some((item) => isRelevantStripePriceId(item?.price?.id || ""))
+    )
   );
 }
 
@@ -540,11 +540,11 @@ async function checkoutSessionBelongsToThisProduct(session) {
   if (!session || typeof session !== "object") {
     return false;
   }
-  if (
+  const hasProductSlug =
     session.metadata?.productSlug === PRODUCT_SLUG ||
-    session.subscription_details?.metadata?.productSlug === PRODUCT_SLUG
-  ) {
-    return true;
+    session.subscription_details?.metadata?.productSlug === PRODUCT_SLUG;
+  if (!hasProductSlug) {
+    return false;
   }
   if (isRelevantStripePriceId(session.line_items?.data?.[0]?.price?.id || "")) {
     return true;
