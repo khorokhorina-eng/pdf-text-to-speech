@@ -908,6 +908,49 @@ function getAccountUsagePeriodKey(subscription) {
   return subscriptionId ? `${subscriptionId}:${periodEnd}` : "";
 }
 
+function stripeTimestampToIso(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value * 1000).toISOString();
+  }
+  if (typeof value === "string" && value.trim()) {
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+  }
+  return null;
+}
+
+function getStripeSubscriptionPeriod(subscription) {
+  const item = subscription?.items?.data?.[0] || {};
+  return {
+    currentPeriodStart: stripeTimestampToIso(
+      item.current_period_start ?? subscription?.current_period_start
+    ),
+    currentPeriodEnd: stripeTimestampToIso(
+      item.current_period_end ?? subscription?.current_period_end
+    ),
+  };
+}
+
+function toSubscriptionStatus(subscription) {
+  const item = subscription?.items?.data?.[0] || {};
+  const plan = getPlanByStripePriceId(item?.price?.id || "");
+  const period = getStripeSubscriptionPeriod(subscription);
+  return {
+    active: subscription?.status === "active" || subscription?.status === "trialing",
+    status: subscription?.status || "none",
+    plan: {
+      planId: plan?.id || subscription?.metadata?.planId || null,
+      subscriptionId: subscription?.id || null,
+      priceId: item?.price?.id || null,
+      interval: item?.price?.recurring?.interval || null,
+      currentPeriodStart: period.currentPeriodStart,
+      currentPeriodEnd: period.currentPeriodEnd,
+      cancelAtPeriodEnd: Boolean(subscription?.cancel_at_period_end),
+      cancelAt: stripeTimestampToIso(subscription?.cancel_at),
+    },
+  };
+}
+
 function getOrCreateAccountPeriodUsage(state, accountId, subscription) {
   const periodKey = getAccountUsagePeriodKey(subscription);
   if (!accountId || !periodKey) {
@@ -928,6 +971,7 @@ function getOrCreateAccountPeriodUsage(state, accountId, subscription) {
       subscriptionId: subscription.plan.subscriptionId || null,
       planId: subscription.plan.planId || null,
       periodKey,
+      periodStart: subscription.plan.currentPeriodStart || null,
       periodEnd: subscription.plan.currentPeriodEnd || null,
       includedMinutes,
       includedSeconds: includedMinutes * 60,
@@ -943,6 +987,7 @@ function getOrCreateAccountPeriodUsage(state, accountId, subscription) {
   usage.includedSeconds = includedMinutes * 60;
   usage.planId = subscription.plan.planId || usage.planId || null;
   usage.subscriptionId = subscription.plan.subscriptionId || usage.subscriptionId || null;
+  usage.periodStart = subscription.plan.currentPeriodStart || usage.periodStart || null;
   usage.periodEnd = subscription.plan.currentPeriodEnd || usage.periodEnd || null;
   usage.minutesUsed = Math.max(0, Math.floor(Number(usage.minutesUsed) || 0));
   usage.secondsUsed = Number.isFinite(Number(usage.secondsUsed))
@@ -1081,25 +1126,13 @@ async function lookupSubscriptionStatusForAccount(state, account) {
     };
   }
 
-  const item = activeSub.items?.data?.[0];
-  const plan = getPlanByStripePriceId(item?.price?.id || "");
+  const subscriptionStatus = toSubscriptionStatus(activeSub);
 
   return {
-    active: true,
-    status: activeSub.status,
+    ...subscriptionStatus,
     customerId,
     email: account.email,
     signedIn: true,
-    plan: {
-      planId: plan?.id || activeSub.metadata?.planId || null,
-      subscriptionId: activeSub.id,
-      priceId: item?.price?.id || null,
-      interval: item?.price?.recurring?.interval || null,
-      currentPeriodStart: activeSub.current_period_start || null,
-      currentPeriodEnd: activeSub.current_period_end || null,
-      cancelAtPeriodEnd: Boolean(activeSub.cancel_at_period_end),
-      cancelAt: activeSub.cancel_at || null,
-    },
   };
 }
 
@@ -2264,6 +2297,13 @@ async function handleStripeWebhook(req, res) {
       const customerId = typeof sub.customer === "string" ? sub.customer : "";
       const accountId = sub.metadata?.accountId || state.customerToAccount?.[customerId] || "";
       rememberAccountCustomer(state, accountId, customerId);
+      const account = state.accountsById?.[accountId] || null;
+      const subscriptionStatus = toSubscriptionStatus(sub);
+      if (account && subscriptionStatus.active) {
+        // Seed a separate zero-usage record as soon as Stripe opens or renews
+        // a period, before the user's next playback request arrives.
+        getOrCreateAccountPeriodUsage(state, account.id, subscriptionStatus);
+      }
     }
 
     writeState(state);
