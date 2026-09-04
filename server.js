@@ -60,9 +60,15 @@ const STRIPE_MONTHLY_PRICE_ID =
   process.env.STRIPE_MONTHLY_PRICE_ID || process.env.STRIPE_PRICE_MONTHLY || "";
 const STRIPE_ANNUAL_PRICE_ID =
   process.env.STRIPE_YEARLY_PRICE_ID || process.env.STRIPE_PRICE_ANNUAL || "";
+// Keep access for subscriptions sold under previous PDF Text to Speech prices.
+// A legacy price is still accepted only together with this product's metadata.
+const STRIPE_LEGACY_PRICE_IDS = (process.env.STRIPE_LEGACY_PRICE_IDS || "")
+  .split(",")
+  .map((priceId) => priceId.trim())
+  .filter(Boolean);
 const PRODUCT_SLUG = "pdf_text_to_speech";
 const APP_STRIPE_PRICE_IDS = new Set(
-  [STRIPE_MONTHLY_PRICE_ID, STRIPE_ANNUAL_PRICE_ID].filter(Boolean)
+  [STRIPE_MONTHLY_PRICE_ID, STRIPE_ANNUAL_PRICE_ID, ...STRIPE_LEGACY_PRICE_IDS].filter(Boolean)
 );
 
 const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || "";
