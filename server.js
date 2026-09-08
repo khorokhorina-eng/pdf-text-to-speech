@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const Stripe = require("stripe");
 
 function loadEnvFile() {
@@ -70,6 +71,16 @@ const PRODUCT_SLUG = "pdf_text_to_speech";
 const APP_STRIPE_PRICE_IDS = new Set(
   [STRIPE_MONTHLY_PRICE_ID, STRIPE_ANNUAL_PRICE_ID, ...STRIPE_LEGACY_PRICE_IDS].filter(Boolean)
 );
+const LEMON_SQUEEZY_API_KEY = process.env.LEMON_SQUEEZY_API_KEY || "";
+const LEMON_SQUEEZY_STORE_ID = process.env.LEMON_SQUEEZY_STORE_ID || "";
+const LEMON_SQUEEZY_MONTHLY_VARIANT_ID = process.env.LEMON_SQUEEZY_MONTHLY_VARIANT_ID || "";
+const LEMON_SQUEEZY_ANNUAL_VARIANT_ID = process.env.LEMON_SQUEEZY_ANNUAL_VARIANT_ID || "";
+const LEMON_SQUEEZY_WEBHOOK_SECRET = process.env.LEMON_SQUEEZY_WEBHOOK_SECRET || "";
+const NEW_CHECKOUT_PROVIDER = (process.env.NEW_CHECKOUT_PROVIDER || "stripe").trim().toLowerCase();
+const LEMON_SQUEEZY_API_URL = "https://api.lemonsqueezy.com/v1";
+const LEMON_SQUEEZY_ENABLED = NEW_CHECKOUT_PROVIDER === "lemon" && Boolean(
+  LEMON_SQUEEZY_API_KEY && LEMON_SQUEEZY_STORE_ID && LEMON_SQUEEZY_MONTHLY_VARIANT_ID && LEMON_SQUEEZY_ANNUAL_VARIANT_ID
+);
 
 const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || "";
 const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || "";
@@ -105,6 +116,7 @@ const PLAN_DEFINITIONS = [
     name: "Monthly plan",
     description: "Unlimited playback and full access.",
     stripePriceId: STRIPE_MONTHLY_PRICE_ID,
+    lemonVariantId: LEMON_SQUEEZY_MONTHLY_VARIANT_ID,
     includedMinutes: Math.max(1, Number(process.env.MONTHLY_MINUTES || 300)),
   },
   {
@@ -112,6 +124,7 @@ const PLAN_DEFINITIONS = [
     name: "Annual plan",
     description: "Unlimited playback and full access.",
     stripePriceId: STRIPE_ANNUAL_PRICE_ID,
+    lemonVariantId: LEMON_SQUEEZY_ANNUAL_VARIANT_ID,
     includedMinutes: Math.max(1, Number(process.env.ANNUAL_MINUTES || 3600)),
   },
 ];
@@ -295,6 +308,9 @@ function createEmptyState() {
     sessionToReturnUrl: {},
     purchaseEventsSent: {},
     subscriptionOverridesByEmail: {},
+    lemonSubscriptionsByAccount: {},
+    lemonSubscriptionToAccount: {},
+    lemonCheckoutToAccount: {},
     googleStates: {},
   };
 }
@@ -418,7 +434,7 @@ function setCorsHeaders(res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, Stripe-Signature, x-device-token"
+    "Content-Type, Authorization, Stripe-Signature, X-Signature, x-device-token"
   );
 }
 
@@ -446,6 +462,31 @@ function ensureStripeConfigured(res) {
   }
   sendJson(res, 500, { error: "STRIPE_SECRET_KEY is not set." });
   return false;
+}
+
+function ensureNewCheckoutConfigured(res) {
+  if (NEW_CHECKOUT_PROVIDER === "lemon" && LEMON_SQUEEZY_ENABLED) return true;
+  if (NEW_CHECKOUT_PROVIDER === "stripe" && stripe) return true;
+  sendJson(res, 500, { error: "New checkout provider is not configured." });
+  return false;
+}
+
+function lemonApiHeaders() {
+  return {
+    Accept: "application/vnd.api+json",
+    "Content-Type": "application/vnd.api+json",
+    Authorization: `Bearer ${LEMON_SQUEEZY_API_KEY}`,
+  };
+}
+
+async function lemonApiRequest(pathname, options = {}) {
+  const response = await fetch(`${LEMON_SQUEEZY_API_URL}${pathname}`, {
+    ...options,
+    headers: { ...lemonApiHeaders(), ...(options.headers || {}) },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.errors?.[0]?.detail || `Lemon Squeezy HTTP ${response.status}`);
+  return payload;
 }
 
 function getPublicUrl(pathname) {
@@ -526,6 +567,41 @@ function getPlanByStripePriceId(priceId) {
   return PLAN_DEFINITIONS.find((plan) => plan.stripePriceId === priceId) || null;
 }
 
+function getPlanByLemonVariantId(variantId) {
+  return PLAN_DEFINITIONS.find((plan) => String(plan.lemonVariantId || "") === String(variantId || "")) || null;
+}
+
+function toLemonSubscriptionStatus(resource) {
+  const attributes = resource?.attributes || {};
+  const status = String(attributes.status || "none").toLowerCase();
+  const plan = getPlanByLemonVariantId(attributes.variant_id);
+  const active = ["active", "on_trial"].includes(status);
+  return {
+    active,
+    status,
+    provider: "lemon",
+    plan: {
+      provider: "lemon",
+      planId: plan?.id || null,
+      subscriptionId: resource?.id ? `lemon_${resource.id}` : null,
+      priceId: String(attributes.variant_id || ""),
+      interval: plan?.id === "annual" ? "year" : "month",
+      currentPeriodStart: attributes.created_at || null,
+      currentPeriodEnd: attributes.renews_at || attributes.ends_at || null,
+      cancelAtPeriodEnd: Boolean(attributes.cancelled || attributes.ends_at),
+      cancelAt: attributes.ends_at || null,
+      portalUrl: attributes.urls?.customer_portal || attributes.urls?.update_subscription || "",
+    },
+  };
+}
+
+function getLemonSubscriptionForAccount(state, account) {
+  const stored = state.lemonSubscriptionsByAccount?.[account?.id];
+  if (!stored) return null;
+  const status = toLemonSubscriptionStatus(stored);
+  return { ...status, email: account.email, signedIn: true, customerId: String(stored?.attributes?.customer_id || "") || null };
+}
+
 function isRelevantStripePriceId(priceId) {
   return Boolean(priceId) && APP_STRIPE_PRICE_IDS.has(String(priceId));
 }
@@ -580,6 +656,18 @@ function formatPerDayAmount(amountCents, interval) {
 }
 
 async function resolvePricingPlans() {
+  if (LEMON_SQUEEZY_ENABLED) {
+    return PLAN_DEFINITIONS.map((plan) => ({
+      planId: plan.id,
+      label: plan.id === "annual" ? "Yearly" : "Monthly",
+      interval: plan.id === "annual" ? "year" : "month",
+      amountCents: null,
+      displayPrice: "",
+      perDayPrice: "",
+      billingNote: plan.id === "annual" ? "Billed annually" : "Billed monthly",
+      badge: plan.id === "annual" ? "Best Value" : "",
+    }));
+  }
   if (!stripe) {
     return PLAN_DEFINITIONS.map((plan) => ({
       planId: plan.id,
@@ -1076,6 +1164,9 @@ async function lookupSubscriptionStatusForAccount(state, account) {
     };
   }
 
+  const lemonSubscription = getLemonSubscriptionForAccount(state, account);
+  if (lemonSubscription?.active) return lemonSubscription;
+
   if (!stripe) {
     return {
       active: false,
@@ -1141,7 +1232,9 @@ async function resolveSubscriptionStatusForAccount(state, account) {
   if (override) {
     return override;
   }
-  return lookupSubscriptionStatusForAccount(state, account);
+  const status = await lookupSubscriptionStatusForAccount(state, account);
+  if (status.active) return status;
+  return getLemonSubscriptionForAccount(state, account) || status;
 }
 
 async function fetchGoogleUserInfo(accessToken) {
@@ -1210,7 +1303,7 @@ async function handleAuthMe(req, res, parsedUrl) {
 }
 
 async function handlePlans(res) {
-  if (!ensureStripeConfigured(res)) {
+  if (!ensureNewCheckoutConfigured(res)) {
     return;
   }
 
@@ -1843,8 +1936,32 @@ async function handleAuthLogout(req, res, parsedUrl) {
   sendJson(res, 200, { ok: true });
 }
 
+async function createLemonCheckout({ account, deviceToken, selectedPlan, returnUrl, state }) {
+  if (!selectedPlan.lemonVariantId) throw new Error(`Lemon variant ID is not configured for ${selectedPlan.id}.`);
+  const payload = await lemonApiRequest("/checkouts", {
+    method: "POST",
+    body: JSON.stringify({
+      data: {
+        type: "checkouts",
+        attributes: {
+          checkout_data: { custom: { accountId: account.id, deviceToken, planId: selectedPlan.id, productSlug: PRODUCT_SLUG } },
+          product_options: { redirect_url: returnUrl || getPublicUrl("/thank-you") },
+        },
+        relationships: {
+          store: { data: { type: "stores", id: String(LEMON_SQUEEZY_STORE_ID) } },
+          variant: { data: { type: "variants", id: String(selectedPlan.lemonVariantId) } },
+        },
+      },
+    }),
+  });
+  const checkout = payload?.data;
+  if (!checkout?.id || !checkout?.attributes?.url) throw new Error("Lemon Squeezy did not return a checkout URL.");
+  state.lemonCheckoutToAccount[checkout.id] = account.id;
+  return checkout;
+}
+
 async function handleCreateCheckoutSession(req, res, parsedUrl) {
-  if (!ensureStripeConfigured(res)) {
+  if (!ensureNewCheckoutConfigured(res)) {
     return;
   }
 
@@ -1875,11 +1992,6 @@ async function handleCreateCheckoutSession(req, res, parsedUrl) {
     return;
   }
 
-  if (!selectedPlan.stripePriceId) {
-    sendJson(res, 500, { error: `Stripe price ID is not configured for ${selectedPlan.id}.` });
-    return;
-  }
-
   const state = readState();
   let account = getAccountForDevice(state, deviceToken);
 
@@ -1896,6 +2008,18 @@ async function handleCreateCheckoutSession(req, res, parsedUrl) {
           "An active subscription already exists on this account. Use subscription settings to change plans or cancel renewal.",
         code: "active-subscription-exists",
       });
+      return;
+    }
+
+    if (NEW_CHECKOUT_PROVIDER === "lemon") {
+      const checkout = await createLemonCheckout({ account, deviceToken, selectedPlan, returnUrl, state });
+      writeState(state);
+      sendJson(res, 200, { url: checkout.attributes.url, sessionId: `lemon_${checkout.id}`, provider: "lemon" });
+      return;
+    }
+
+    if (!selectedPlan.stripePriceId) {
+      sendJson(res, 500, { error: `Stripe price ID is not configured for ${selectedPlan.id}.` });
       return;
     }
 
@@ -1939,10 +2063,6 @@ async function handleCreateCheckoutSession(req, res, parsedUrl) {
 }
 
 async function handleCreateBillingPortalSession(req, res, parsedUrl) {
-  if (!ensureStripeConfigured(res)) {
-    return;
-  }
-
   let body;
   try {
     body = await parseJsonBody(req);
@@ -1965,6 +2085,17 @@ async function handleCreateBillingPortalSession(req, res, parsedUrl) {
     return;
   }
 
+  const currentSubscription = await resolveSubscriptionStatusForAccount(state, account);
+  if (currentSubscription.plan?.provider === "lemon") {
+    if (!currentSubscription.plan.portalUrl) {
+      sendJson(res, 404, { error: "Lemon Squeezy subscription portal is not available yet." });
+      return;
+    }
+    sendJson(res, 200, { ok: true, url: currentSubscription.plan.portalUrl, provider: "lemon" });
+    return;
+  }
+  if (!ensureStripeConfigured(res)) return;
+
   const customerId = state.accountToCustomer[account.id];
   if (!customerId) {
     sendJson(res, 404, { error: "No Stripe customer found for this account." });
@@ -1983,10 +2114,6 @@ async function handleCreateBillingPortalSession(req, res, parsedUrl) {
 }
 
 async function handleBillingPortalStart(req, res, parsedUrl) {
-  if (!ensureStripeConfigured(res)) {
-    return;
-  }
-
   const deviceToken = getDeviceToken(req, parsedUrl, null);
   const requestedReturnUrl = sanitizeExtensionReturnUrl(parsedUrl.searchParams.get("return_url") || "");
   const returnUrl =
@@ -2003,6 +2130,17 @@ async function handleBillingPortalStart(req, res, parsedUrl) {
     sendHtml(res, 401, renderAuthCompletePage("Sign-in required", "Please sign in before managing your subscription.", returnUrl));
     return;
   }
+
+  const currentSubscription = await resolveSubscriptionStatusForAccount(state, account);
+  if (currentSubscription.plan?.provider === "lemon") {
+    if (!currentSubscription.plan.portalUrl) {
+      sendHtml(res, 404, renderAuthCompletePage("Subscription settings unavailable", "The Lemon Squeezy customer portal is not available yet.", returnUrl));
+      return;
+    }
+    redirect(res, currentSubscription.plan.portalUrl);
+    return;
+  }
+  if (!ensureStripeConfigured(res)) return;
 
   const customerId = state.accountToCustomer[account.id];
   if (!customerId) {
@@ -2168,10 +2306,6 @@ async function handlePlaybackUsage(req, res, parsedUrl) {
 }
 
 async function handleSubscriptionStatus(req, res, parsedUrl) {
-  if (!ensureStripeConfigured(res)) {
-    return;
-  }
-
   const deviceToken = getDeviceToken(req, parsedUrl, null);
   const timeZone = getClientTimeZone(req, parsedUrl, null);
   if (!deviceToken) {
@@ -2317,6 +2451,48 @@ async function handleStripeWebhook(req, res) {
     }
     sendJson(res, 500, { error: error.message || "Webhook handler failed." });
   }
+}
+
+async function handleLemonSqueezyWebhook(req, res) {
+  if (!LEMON_SQUEEZY_WEBHOOK_SECRET) {
+    sendJson(res, 500, { error: "LEMON_SQUEEZY_WEBHOOK_SECRET is not set." });
+    return;
+  }
+  let rawBody;
+  try { rawBody = await readBody(req); }
+  catch (error) { sendJson(res, 400, { error: error.message || "Unable to read webhook body." }); return; }
+  const received = String(req.headers["x-signature"] || "");
+  const expected = crypto.createHmac("sha256", LEMON_SQUEEZY_WEBHOOK_SECRET).update(rawBody).digest("hex");
+  if (!received || received.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(received), Buffer.from(expected))) {
+    sendJson(res, 400, { error: "Webhook signature verification failed." });
+    return;
+  }
+  let event;
+  try { event = JSON.parse(rawBody.toString("utf8")); }
+  catch (_error) { sendJson(res, 400, { error: "Invalid JSON payload." }); return; }
+  const eventName = String(event?.meta?.event_name || req.headers["x-event-name"] || "");
+  const resource = event?.data;
+  if (resource?.type !== "subscriptions" || !eventName.startsWith("subscription_")) {
+    sendJson(res, 200, { received: true, ignored: true });
+    return;
+  }
+  const variantId = String(resource?.attributes?.variant_id || "");
+  if (!getPlanByLemonVariantId(variantId)) {
+    sendJson(res, 200, { received: true, ignored: true });
+    return;
+  }
+  const state = readState();
+  const accountId = event?.meta?.custom_data?.accountId || state.lemonSubscriptionToAccount?.[resource.id] || "";
+  if (!accountId || !state.accountsById?.[accountId]) {
+    sendJson(res, 200, { received: true, ignored: true });
+    return;
+  }
+  state.lemonSubscriptionsByAccount[accountId] = resource;
+  state.lemonSubscriptionToAccount[resource.id] = accountId;
+  const status = toLemonSubscriptionStatus(resource);
+  if (status.active) getOrCreateAccountPeriodUsage(state, accountId, status);
+  writeState(state);
+  sendJson(res, 200, { received: true });
 }
 
 async function handleTts(req, res, parsedUrl) {
@@ -2587,6 +2763,11 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && parsedUrl.pathname === "/stripe/webhook") {
     await handleStripeWebhook(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/lemon/webhook") {
+    await handleLemonSqueezyWebhook(req, res);
     return;
   }
 
