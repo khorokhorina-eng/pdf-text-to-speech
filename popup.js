@@ -794,10 +794,17 @@ function updateUI() {
     !(authState.signedIn && currentSubscription?.active)
   );
   const hasActiveSubscription = Boolean(currentSubscription?.active);
+  const cancellationScheduled = Boolean(currentSubscription?.plan?.cancelAtPeriodEnd);
   authPanelEl?.classList.add("hidden");
   activeSubscriptionPanelEl?.classList.toggle("hidden", !hasActiveSubscription);
   monthlyPlanCard?.classList.toggle("hidden", hasActiveSubscription);
   annualPlanCard?.classList.toggle("hidden", hasActiveSubscription);
+  if (cancelSubscriptionBtn) {
+    cancelSubscriptionBtn.disabled = cancellationScheduled;
+    cancelSubscriptionBtn.textContent = cancellationScheduled
+      ? "Cancellation scheduled"
+      : "Cancel subscription";
+  }
   if (activeSubscriptionCopyEl) {
     const activePlanId = currentSubscription?.plan?.planId || "monthly";
     const currentLabel = PLAN_LABELS[activePlanId] || activePlanId;
@@ -3067,7 +3074,7 @@ async function openBillingPortal() {
       changePlanBtn.disabled = false;
     }
     if (cancelSubscriptionBtn) {
-      cancelSubscriptionBtn.disabled = false;
+      cancelSubscriptionBtn.disabled = Boolean(currentSubscription?.plan?.cancelAtPeriodEnd);
     }
   }
 }
