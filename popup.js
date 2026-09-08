@@ -800,10 +800,8 @@ function updateUI() {
   monthlyPlanCard?.classList.toggle("hidden", hasActiveSubscription);
   annualPlanCard?.classList.toggle("hidden", hasActiveSubscription);
   if (cancelSubscriptionBtn) {
+    cancelSubscriptionBtn.classList.toggle("hidden", cancellationScheduled);
     cancelSubscriptionBtn.disabled = cancellationScheduled;
-    cancelSubscriptionBtn.textContent = cancellationScheduled
-      ? "Cancellation scheduled"
-      : "Cancel subscription";
   }
   if (activeSubscriptionCopyEl) {
     const activePlanId = currentSubscription?.plan?.planId || "monthly";
