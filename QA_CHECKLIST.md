@@ -22,7 +22,7 @@ Do not ship if any of these fail:
 
 ## Pricing
 
-Verify all pricing surfaces match the live Stripe configuration:
+Verify all pricing surfaces match the active billing configuration:
 - backend `/plans` returns the expected monthly and yearly prices
 - popup paywall shows the same prices
 - standalone paywall shows the same prices
@@ -72,7 +72,7 @@ Check:
 
 Verify checkout behavior:
 - signed-out user is asked to sign in first
-- signed-in unpaid user can open Stripe Checkout
+- signed-in unpaid user can open the current checkout provider
 - paid user cannot create a second active subscription
 - checkout success page appears
 - return goes back to the expected page

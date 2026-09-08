@@ -15,7 +15,7 @@ What data is processed:
 
 - PDF text selected for reading aloud.
 - A device token used to identify usage limits and subscription state.
-- Billing-related identifiers when a user starts or manages a paid plan through Stripe.
+- Billing-related identifiers when a user starts or manages a paid plan through Lemon Squeezy or Stripe.
 - Support request details if the user contacts support.
 
 What data is not sold:
@@ -26,13 +26,14 @@ How data is used:
 
 - To generate speech audio for requested PDF content.
 - To enforce the free usage limit and paid subscription rules.
-- To process payments and subscription access through Stripe.
+- To process payments and subscription access through Lemon Squeezy or Stripe.
 - To respond to support requests.
 
 Third parties:
 
 - OpenAI for text-to-speech generation.
-- Stripe for checkout, billing, and subscription management.
+- Lemon Squeezy for new checkout, billing, and subscription management.
+- Stripe for existing checkout, billing, and subscription management.
 
 Data retention:
 
@@ -79,16 +80,16 @@ Service and billing:
 
 - The extension includes a limited daily listening allowance.
 - Continued listening after the daily limit requires a paid plan.
-- Payments and subscriptions are handled through Stripe.
+- New payments and subscriptions are handled through Lemon Squeezy. Existing Stripe subscriptions remain supported.
 
 Privacy summary:
 
 - PDF text is processed to generate audio playback.
 - Usage state is stored to manage listening limits and subscription access.
-- Checkout and billing are handled through Stripe.
+- Checkout and billing are handled through Lemon Squeezy or Stripe, as applicable.
 
 PDF Text to Speech is designed for users who want a simple way to listen to PDF content in Chrome.
 
 ### Suggested Privacy Disclosure
 
-This extension sends extracted PDF text to pdftext2speech.com and OpenAI to generate speech audio. It also stores a device token to manage free usage and subscription access.
+This extension sends extracted PDF text to pdftext2speech.com and OpenAI to generate speech audio. It stores a device token and account, usage, and subscription state to manage listening access. New payments are handled through Lemon Squeezy; existing Stripe subscriptions remain supported.
