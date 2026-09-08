@@ -657,16 +657,25 @@ function formatPerDayAmount(amountCents, interval) {
 
 async function resolvePricingPlans() {
   if (LEMON_SQUEEZY_ENABLED) {
-    return PLAN_DEFINITIONS.map((plan) => ({
-      planId: plan.id,
-      label: plan.id === "annual" ? "Yearly" : "Monthly",
-      interval: plan.id === "annual" ? "year" : "month",
-      amountCents: null,
-      displayPrice: "",
-      perDayPrice: "",
-      billingNote: plan.id === "annual" ? "Billed annually" : "Billed monthly",
-      badge: plan.id === "annual" ? "Best Value" : "",
-    }));
+    const plans = [];
+    for (const plan of PLAN_DEFINITIONS) {
+      const variant = await lemonApiRequest(`/variants/${encodeURIComponent(plan.lemonVariantId)}`);
+      const attributes = variant?.data?.attributes || {};
+      const amountCents = Number(attributes.price || 0);
+      const interval = attributes.interval || (plan.id === "annual" ? "year" : "month");
+      const displayAmount = formatUsdAmountFromCents(amountCents);
+      plans.push({
+        planId: plan.id,
+        label: plan.id === "annual" ? "Yearly" : "Monthly",
+        interval,
+        amountCents,
+        displayPrice: displayAmount,
+        perDayPrice: formatPerDayAmount(amountCents, interval),
+        billingNote: interval === "year" ? `Billed annually ${displayAmount} / year` : `Billed monthly ${displayAmount} / month`,
+        badge: plan.id === "annual" ? "Best Value" : "",
+      });
+    }
+    return plans;
   }
   if (!stripe) {
     return PLAN_DEFINITIONS.map((plan) => ({
