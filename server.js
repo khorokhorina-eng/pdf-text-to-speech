@@ -1954,7 +1954,10 @@ async function createLemonCheckout({ account, deviceToken, selectedPlan, returnU
         type: "checkouts",
         attributes: {
           checkout_data: { custom: { accountId: account.id, deviceToken, planId: selectedPlan.id, productSlug: PRODUCT_SLUG } },
-          product_options: { redirect_url: returnUrl || getPublicUrl("/thank-you") },
+          // Lemon Squeezy only accepts public HTTPS URLs. A browser extension can
+          // pass a chrome-extension:// or PDF URL here, which Lemon then ignores
+          // and leaves the customer on a blank checkout page after payment.
+          product_options: { redirect_url: getPublicUrl("/thank-you") },
         },
         relationships: {
           store: { data: { type: "stores", id: String(LEMON_SQUEEZY_STORE_ID) } },

@@ -135,7 +135,7 @@ async function openCheckout(planId, button) {
   const initialLabel = button.textContent;
   button.disabled = true;
   button.textContent = "Creating checkout...";
-  setStatus("Creating Stripe Checkout session...");
+  setStatus("Creating secure checkout...");
 
   try {
     const result = await sendMessage({
@@ -148,7 +148,7 @@ async function openCheckout(planId, button) {
       throw new Error("Checkout URL is missing.");
     }
 
-    setStatus("Redirecting to Stripe Checkout...");
+    setStatus("Redirecting to secure checkout...");
     window.location.assign(result.url);
   } catch (error) {
     setStatus(error.message || "Unable to open checkout.");

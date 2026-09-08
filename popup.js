@@ -2984,7 +2984,7 @@ async function openCheckoutForPlan(planId) {
     continueCheckoutAnnualBtn.setAttribute("aria-busy", "true");
     continueCheckoutAnnualBtn.textContent = "Opening checkout...";
   }
-  setPaywallStatus("Creating Stripe Checkout session...");
+  setPaywallStatus("Creating secure checkout...");
   try {
     const result = await sendRuntimeMessage({
       type: "createCheckoutSession",
@@ -3002,7 +3002,7 @@ async function openCheckoutForPlan(planId) {
         : -1,
     });
     chrome.tabs.create({ url: result.url });
-    setPaywallStatus("Stripe Checkout opened in a new tab.");
+    setPaywallStatus("Secure checkout opened in a new tab.");
   } catch (error) {
     setPaywallStatus(error.message || "Unable to open checkout.");
   } finally {
