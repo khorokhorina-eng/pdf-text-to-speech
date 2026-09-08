@@ -123,6 +123,7 @@ let authState = { signedIn: false, email: "", method: null };
 let minFreePlaybackStartSeconds = 0;
 let activeScreen = "reader";
 let isAuthenticating = false;
+let checkoutReturnPending = false;
 let preAuthRemainingSeconds = null;
 let trialAdjustedAfterSignIn = false;
 let authSuccessToastTimer = null;
@@ -802,6 +803,10 @@ function updateUI() {
   if (cancelSubscriptionBtn) {
     cancelSubscriptionBtn.classList.toggle("hidden", cancellationScheduled);
     cancelSubscriptionBtn.disabled = cancellationScheduled;
+  }
+  if (drawerManageSubscriptionBtn) {
+    drawerManageSubscriptionBtn.classList.toggle("hidden", cancellationScheduled);
+    drawerManageSubscriptionBtn.disabled = cancellationScheduled;
   }
   if (activeSubscriptionCopyEl) {
     const activePlanId = currentSubscription?.plan?.planId || "monthly";
@@ -2925,6 +2930,11 @@ async function loadSubscriptionStatus() {
         selectedPlanId = currentPlanId;
       }
       setPaywallStatus("");
+      if (checkoutReturnPending) {
+        checkoutReturnPending = false;
+        closePaywall();
+        showTransientToast("Subscription is active. You can continue listening.");
+      }
     } else {
       setPaywallStatus(
         authState.signedIn
@@ -3008,6 +3018,7 @@ async function openCheckoutForPlan(planId) {
         : -1,
     });
     chrome.tabs.create({ url: result.url });
+    checkoutReturnPending = true;
     setPaywallStatus("Secure checkout opened in a new tab.");
   } catch (error) {
     setPaywallStatus(error.message || "Unable to open checkout.");
