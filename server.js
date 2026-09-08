@@ -575,7 +575,12 @@ function toLemonSubscriptionStatus(resource) {
   const attributes = resource?.attributes || {};
   const status = String(attributes.status || "none").toLowerCase();
   const plan = getPlanByLemonVariantId(attributes.variant_id);
-  const active = ["active", "on_trial"].includes(status);
+  const endsAtMs = Date.parse(attributes.ends_at || "");
+  // Lemon marks a subscription as "cancelled" immediately, while access is
+  // still paid for until ends_at.
+  const active =
+    ["active", "on_trial"].includes(status) ||
+    (status === "cancelled" && Number.isFinite(endsAtMs) && endsAtMs > Date.now());
   return {
     active,
     status,
@@ -595,9 +600,24 @@ function toLemonSubscriptionStatus(resource) {
   };
 }
 
-function getLemonSubscriptionForAccount(state, account) {
-  const stored = state.lemonSubscriptionsByAccount?.[account?.id];
+async function getLemonSubscriptionForAccount(state, account) {
+  let stored = state.lemonSubscriptionsByAccount?.[account?.id];
   if (!stored) return null;
+
+  // Webhooks are primary, but refreshing the known subscription here lets the
+  // customer see a cancellation or plan change if a webhook is delayed.
+  if (LEMON_SQUEEZY_ENABLED && stored?.id) {
+    try {
+      const response = await lemonApiRequest(`/subscriptions/${encodeURIComponent(stored.id)}`);
+      if (response?.data) {
+        stored = response.data;
+        state.lemonSubscriptionsByAccount[account.id] = stored;
+        state.lemonSubscriptionToAccount[stored.id] = account.id;
+      }
+    } catch (_error) {
+      // Keep the last verified status if Lemon Squeezy is temporarily unavailable.
+    }
+  }
   const status = toLemonSubscriptionStatus(stored);
   return { ...status, email: account.email, signedIn: true, customerId: String(stored?.attributes?.customer_id || "") || null };
 }
@@ -1173,7 +1193,7 @@ async function lookupSubscriptionStatusForAccount(state, account) {
     };
   }
 
-  const lemonSubscription = getLemonSubscriptionForAccount(state, account);
+  const lemonSubscription = await getLemonSubscriptionForAccount(state, account);
   if (lemonSubscription?.active) return lemonSubscription;
 
   if (!stripe) {
@@ -1243,7 +1263,7 @@ async function resolveSubscriptionStatusForAccount(state, account) {
   }
   const status = await lookupSubscriptionStatusForAccount(state, account);
   if (status.active) return status;
-  return getLemonSubscriptionForAccount(state, account) || status;
+  return (await getLemonSubscriptionForAccount(state, account)) || status;
 }
 
 async function fetchGoogleUserInfo(accessToken) {

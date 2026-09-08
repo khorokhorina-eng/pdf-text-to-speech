@@ -802,12 +802,13 @@ function updateUI() {
     const activePlanId = currentSubscription?.plan?.planId || "monthly";
     const currentLabel = PLAN_LABELS[activePlanId] || activePlanId;
     const endLabel = formatPlanDateLabel(currentSubscription?.plan?.currentPeriodEnd);
+    const billingProvider = currentSubscription?.plan?.provider === "lemon" ? "Lemon Squeezy" : "Stripe";
     activeSubscriptionCopyEl.textContent =
       currentSubscription?.plan?.cancelAtPeriodEnd && endLabel
         ? `Your ${currentLabel} subscription will end on ${endLabel}. You can keep listening until then.`
         : endLabel
-        ? `Your ${currentLabel} subscription renews on ${endLabel}. Use Stripe to change plans or cancel renewal.`
-        : `Your ${currentLabel} subscription is active. Use Stripe to change plans or cancel renewal.`;
+        ? `Your ${currentLabel} subscription renews on ${endLabel}. Use ${billingProvider} to change plans or cancel renewal.`
+        : `Your ${currentLabel} subscription is active. Use ${billingProvider} to change plans or cancel renewal.`;
   }
   if (!hasLoadedPdf() && !trialExhausted && !showFileAccessHelp) {
     state.message = "Open a PDF in Chrome and start playback in the side panel.";
