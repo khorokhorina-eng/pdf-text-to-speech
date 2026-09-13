@@ -668,9 +668,9 @@ function getPlanPresentation() {
     name: "Free Listening",
     meta:
       getLiveRemainingSeconds() > 0
-        ? `10 free minutes each day. ${formatRemainingSeconds(getLiveRemainingSeconds())} left today.`
+        ? `5 free minutes each day. ${formatRemainingSeconds(getLiveRemainingSeconds())} left today.`
         : hasKnownTrialRemaining()
-        ? "10 free minutes each day. Come back tomorrow or unlock unlimited listening."
+        ? "5 free minutes each day. Come back tomorrow or unlock unlimited listening."
         : "Checking today's listening access...",
   };
 }
@@ -2939,7 +2939,7 @@ async function loadSubscriptionStatus() {
       setPaywallStatus(
         authState.signedIn
           ? "Choose a plan to continue."
-          : "Free plan: 10 free minutes each day. Choose a plan and sign in before checkout."
+          : "Free plan: 5 free minutes each day. Choose a plan and sign in before checkout."
       );
     }
     updatePaywallCopy();
