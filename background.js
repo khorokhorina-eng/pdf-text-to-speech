@@ -555,7 +555,7 @@ async function synthesizeSpeech({ text, speed, language }) {
   throw new Error(message);
 }
 
-async function createCheckoutSession(planId, returnUrl) {
+async function createCheckoutSession(planId, returnUrl, topupId = "") {
   const deviceToken = await getOrCreateDeviceToken();
   const authState = await getAuthState();
 
@@ -569,6 +569,7 @@ async function createCheckoutSession(planId, returnUrl) {
     body: JSON.stringify({
       device_token: deviceToken,
       plan: planId,
+      topup_id: topupId || "",
       return_url: returnUrl || "",
     }),
   });
@@ -749,7 +750,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "createCheckoutSession") {
-    createCheckoutSession(message.planId, message.returnUrl)
+    createCheckoutSession(message.planId, message.returnUrl, message.topupId)
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => {
         const errorMessage =

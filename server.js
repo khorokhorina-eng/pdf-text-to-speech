@@ -75,6 +75,8 @@ const LEMON_SQUEEZY_API_KEY = process.env.LEMON_SQUEEZY_API_KEY || "";
 const LEMON_SQUEEZY_STORE_ID = process.env.LEMON_SQUEEZY_STORE_ID || "";
 const LEMON_SQUEEZY_MONTHLY_VARIANT_ID = process.env.LEMON_SQUEEZY_MONTHLY_VARIANT_ID || "";
 const LEMON_SQUEEZY_ANNUAL_VARIANT_ID = process.env.LEMON_SQUEEZY_ANNUAL_VARIANT_ID || "";
+const LEMON_SQUEEZY_TOPUP_50_VARIANT_ID = process.env.LEMON_SQUEEZY_TOPUP_50_VARIANT_ID || "";
+const LEMON_SQUEEZY_TOPUP_100_VARIANT_ID = process.env.LEMON_SQUEEZY_TOPUP_100_VARIANT_ID || "";
 const LEMON_SQUEEZY_MONTHLY_CHECKOUT_URL = process.env.LEMON_SQUEEZY_MONTHLY_CHECKOUT_URL || "";
 const LEMON_SQUEEZY_ANNUAL_CHECKOUT_URL = process.env.LEMON_SQUEEZY_ANNUAL_CHECKOUT_URL || "";
 const LEMON_SQUEEZY_WEBHOOK_SECRET = process.env.LEMON_SQUEEZY_WEBHOOK_SECRET || "";
@@ -82,6 +84,12 @@ const NEW_CHECKOUT_PROVIDER = (process.env.NEW_CHECKOUT_PROVIDER || "stripe").tr
 const LEMON_SQUEEZY_API_URL = "https://api.lemonsqueezy.com/v1";
 const LEMON_SQUEEZY_ENABLED = NEW_CHECKOUT_PROVIDER === "lemon" && Boolean(
   LEMON_SQUEEZY_API_KEY && LEMON_SQUEEZY_STORE_ID && LEMON_SQUEEZY_MONTHLY_VARIANT_ID && LEMON_SQUEEZY_ANNUAL_VARIANT_ID
+);
+const LEMON_SQUEEZY_TOPUPS_ENABLED = Boolean(
+  LEMON_SQUEEZY_API_KEY &&
+    LEMON_SQUEEZY_STORE_ID &&
+    LEMON_SQUEEZY_TOPUP_50_VARIANT_ID &&
+    LEMON_SQUEEZY_TOPUP_100_VARIANT_ID
 );
 
 const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || "";
@@ -116,7 +124,7 @@ const PLAN_DEFINITIONS = [
   {
     id: "monthly",
     name: "Monthly plan",
-    description: "Unlimited playback and full access.",
+    description: "300 minutes of playback per monthly billing period.",
     stripePriceId: STRIPE_MONTHLY_PRICE_ID,
     lemonVariantId: LEMON_SQUEEZY_MONTHLY_VARIANT_ID,
     includedMinutes: Math.max(1, Number(process.env.MONTHLY_MINUTES || 300)),
@@ -124,10 +132,25 @@ const PLAN_DEFINITIONS = [
   {
     id: "annual",
     name: "Annual plan",
-    description: "Unlimited playback and full access.",
+    description: "3,600 minutes of playback per annual billing period.",
     stripePriceId: STRIPE_ANNUAL_PRICE_ID,
     lemonVariantId: LEMON_SQUEEZY_ANNUAL_VARIANT_ID,
     includedMinutes: Math.max(1, Number(process.env.ANNUAL_MINUTES || 3600)),
+  },
+];
+
+const TOPUP_DEFINITIONS = [
+  {
+    id: "topup_50",
+    minutes: 50,
+    priceCents: 299,
+    lemonVariantId: LEMON_SQUEEZY_TOPUP_50_VARIANT_ID,
+  },
+  {
+    id: "topup_100",
+    minutes: 100,
+    priceCents: 499,
+    lemonVariantId: LEMON_SQUEEZY_TOPUP_100_VARIANT_ID,
   },
 ];
 
@@ -313,6 +336,7 @@ function createEmptyState() {
     lemonSubscriptionsByAccount: {},
     lemonSubscriptionToAccount: {},
     lemonCheckoutToAccount: {},
+    lemonTopupOrderIds: {},
     googleStates: {},
   };
 }
@@ -473,6 +497,12 @@ function ensureNewCheckoutConfigured(res) {
   return false;
 }
 
+function ensureLemonTopupsConfigured(res) {
+  if (LEMON_SQUEEZY_TOPUPS_ENABLED) return true;
+  sendJson(res, 503, { error: "Extra minutes are not configured yet." });
+  return false;
+}
+
 function lemonApiHeaders() {
   return {
     Accept: "application/vnd.api+json",
@@ -563,6 +593,16 @@ function getPlanById(planId) {
 
   const normalized = planId === "yearly" ? "annual" : planId;
   return PLAN_DEFINITIONS.find((plan) => plan.id === normalized) || null;
+}
+
+function getTopupById(topupId) {
+  return TOPUP_DEFINITIONS.find((topup) => topup.id === String(topupId || "").trim()) || null;
+}
+
+function getTopupByLemonVariantId(variantId) {
+  return TOPUP_DEFINITIONS.find(
+    (topup) => String(topup.lemonVariantId || "") === String(variantId || "")
+  ) || null;
 }
 
 function getPlanByStripePriceId(priceId) {
@@ -1094,6 +1134,8 @@ function getOrCreateAccountPeriodUsage(state, accountId, subscription) {
       periodEnd: subscription.plan.currentPeriodEnd || null,
       includedMinutes,
       includedSeconds: includedMinutes * 60,
+      topupMinutes: 0,
+      topupSeconds: 0,
       minutesUsed: 0,
       secondsUsed: 0,
       createdAt: nowIso(),
@@ -1104,6 +1146,10 @@ function getOrCreateAccountPeriodUsage(state, accountId, subscription) {
   const usage = state.accountUsageByPeriod[accountId][periodKey];
   usage.includedMinutes = includedMinutes;
   usage.includedSeconds = includedMinutes * 60;
+  usage.topupSeconds = Number.isFinite(Number(usage.topupSeconds))
+    ? Math.max(0, Math.floor(Number(usage.topupSeconds)))
+    : Math.max(0, Math.floor(Number(usage.topupMinutes) || 0)) * 60;
+  usage.topupMinutes = Math.floor(usage.topupSeconds / 60);
   usage.planId = subscription.plan.planId || usage.planId || null;
   usage.subscriptionId = subscription.plan.subscriptionId || usage.subscriptionId || null;
   usage.periodStart = subscription.plan.currentPeriodStart || usage.periodStart || null;
@@ -1127,7 +1173,7 @@ function getPaidSecondsLeft(state, account, subscription) {
     return Number.MAX_SAFE_INTEGER;
   }
 
-  return Math.max(0, usage.includedSeconds - usage.secondsUsed);
+  return Math.max(0, usage.includedSeconds + usage.topupSeconds - usage.secondsUsed);
 }
 
 function displayMinutesFromSeconds(seconds) {
@@ -1146,7 +1192,7 @@ function deductPaidSeconds(state, account, subscription, seconds) {
   if (!usage) {
     return true;
   }
-  const secondsLeft = Math.max(0, usage.includedSeconds - usage.secondsUsed);
+  const secondsLeft = Math.max(0, usage.includedSeconds + usage.topupSeconds - usage.secondsUsed);
   if (secondsLeft < seconds) {
     return false;
   }
@@ -2023,11 +2069,50 @@ async function createLemonCheckout({ account, deviceToken, selectedPlan, returnU
   return checkout;
 }
 
-async function handleCreateCheckoutSession(req, res, parsedUrl) {
-  if (!ensureNewCheckoutConfigured(res)) {
-    return;
+async function createLemonTopupCheckout({ account, deviceToken, topup, state }) {
+  if (!topup?.lemonVariantId) {
+    throw new Error("Extra-minute variant is not configured.");
   }
+  const payload = await lemonApiRequest("/checkouts", {
+    method: "POST",
+    body: JSON.stringify({
+      data: {
+        type: "checkouts",
+        attributes: {
+          checkout_data: {
+            email: account.email,
+            custom: {
+              accountId: account.id,
+              deviceToken,
+              productSlug: PRODUCT_SLUG,
+              purchaseType: "topup_minutes",
+              topupId: topup.id,
+              topupMinutes: String(topup.minutes),
+            },
+          },
+          product_options: {
+            name: `PDF Text to Speech — ${topup.minutes} extra minutes`,
+            description: "Available until the end of your current billing period.",
+            redirect_url: getPublicUrl("/thank-you"),
+            enabled_variants: [Number(topup.lemonVariantId)],
+          },
+        },
+        relationships: {
+          store: { data: { type: "stores", id: String(LEMON_SQUEEZY_STORE_ID) } },
+          variant: { data: { type: "variants", id: String(topup.lemonVariantId) } },
+        },
+      },
+    }),
+  });
+  const checkout = payload?.data;
+  if (!checkout?.id || !checkout?.attributes?.url) {
+    throw new Error("Lemon Squeezy did not return a checkout URL.");
+  }
+  state.lemonCheckoutToAccount[checkout.id] = account.id;
+  return checkout;
+}
 
+async function handleCreateCheckoutSession(req, res, parsedUrl) {
   let body;
   try {
     body = await parseJsonBody(req);
@@ -2043,14 +2128,15 @@ async function handleCreateCheckoutSession(req, res, parsedUrl) {
       : typeof body.plan === "string"
       ? body.plan.trim()
       : "";
+  const topup = getTopupById(body.topupId || body.topup_id || "");
   const returnUrl = sanitizeExtensionReturnUrl(body.returnUrl || body.return_url || "");
-  if (!deviceToken || !rawPlanId) {
-    sendJson(res, 400, { error: "device_token and plan are required." });
+  if (!deviceToken || (!rawPlanId && !topup)) {
+    sendJson(res, 400, { error: "device_token and plan or top-up are required." });
     return;
   }
 
-  const selectedPlan = getPlanById(rawPlanId);
-  if (!selectedPlan) {
+  const selectedPlan = rawPlanId ? getPlanById(rawPlanId) : null;
+  if (rawPlanId && !selectedPlan) {
     sendJson(res, 400, { error: "Unknown paid plan." });
     return;
   }
@@ -2065,6 +2151,19 @@ async function handleCreateCheckoutSession(req, res, parsedUrl) {
 
   try {
     const existingSubscription = await resolveSubscriptionStatusForAccount(state, account);
+    if (topup) {
+      if (!ensureLemonTopupsConfigured(res)) return;
+      if (!existingSubscription.active) {
+        sendJson(res, 409, { error: "An active subscription is required to add extra minutes." });
+        return;
+      }
+      const checkout = await createLemonTopupCheckout({ account, deviceToken, topup, state });
+      writeState(state);
+      sendJson(res, 200, { url: checkout.attributes.url, sessionId: `lemon_${checkout.id}`, provider: "lemon", kind: "topup" });
+      return;
+    }
+
+    if (!ensureNewCheckoutConfigured(res)) return;
     if (existingSubscription.active) {
       sendJson(res, 409, {
         error:
@@ -2535,6 +2634,62 @@ async function handleLemonSqueezyWebhook(req, res) {
   catch (_error) { sendJson(res, 400, { error: "Invalid JSON payload." }); return; }
   const eventName = String(event?.meta?.event_name || req.headers["x-event-name"] || "");
   const resource = event?.data;
+
+  if (resource?.type === "orders" && eventName === "order_created") {
+    const custom = event?.meta?.custom_data || {};
+    const topup = getTopupById(custom.topupId);
+    if (
+      !topup ||
+      custom.purchaseType !== "topup_minutes" ||
+      custom.productSlug !== PRODUCT_SLUG ||
+      String(custom.topupMinutes || "") !== String(topup.minutes)
+    ) {
+      sendJson(res, 200, { received: true, ignored: true });
+      return;
+    }
+    const orderStatus = String(resource?.attributes?.status || "").toLowerCase();
+    if (orderStatus && orderStatus !== "paid") {
+      sendJson(res, 200, { received: true, ignored: true });
+      return;
+    }
+    const state = readState();
+    const accountId = String(custom.accountId || "");
+    const account = state.accountsById?.[accountId] || null;
+    const orderId = `lemon_order_${String(resource.id || "")}`;
+    if (!account || !resource.id) {
+      sendJson(res, 200, { received: true, ignored: true });
+      return;
+    }
+    if (state.lemonTopupOrderIds?.[orderId]) {
+      sendJson(res, 200, { received: true, duplicate: true });
+      return;
+    }
+    const subscription = await resolveSubscriptionStatusForAccount(state, account);
+    if (!subscription.active) {
+      sendJson(res, 409, { error: "No active subscription for this extra-minute purchase." });
+      return;
+    }
+    const usage = getOrCreateAccountPeriodUsage(state, account.id, subscription);
+    if (!usage) {
+      sendJson(res, 409, { error: "Unable to determine the current billing period." });
+      return;
+    }
+    usage.topupSeconds += topup.minutes * 60;
+    usage.topupMinutes = Math.floor(usage.topupSeconds / 60);
+    usage.updatedAt = nowIso();
+    state.lemonTopupOrderIds[orderId] = {
+      accountId: account.id,
+      orderId: String(resource.id),
+      topupId: topup.id,
+      minutes: topup.minutes,
+      periodKey: usage.periodKey,
+      creditedAt: nowIso(),
+    };
+    writeState(state);
+    sendJson(res, 200, { received: true, credited: topup.minutes });
+    return;
+  }
+
   if (resource?.type !== "subscriptions" || !eventName.startsWith("subscription_")) {
     sendJson(res, 200, { received: true, ignored: true });
     return;

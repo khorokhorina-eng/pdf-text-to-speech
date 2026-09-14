@@ -35,7 +35,7 @@
           </div>
         </div>
         <div class="drawer-actions">
-          <button id="drawerUpgrade" class="drawer-upgrade-btn">Unlock Unlimited Listening</button>
+          <button id="drawerUpgrade" class="drawer-upgrade-btn">Unlock more listening time</button>
           <div id="drawerSubscriptionActions" class="manage-subscription-actions drawer-subscription-actions hidden">
             <button id="drawerChangePlan" class="secondary-action" type="button">Change plan</button>
             <button id="drawerManageSubscription" class="drawer-link-btn" type="button">Cancel subscription</button>
@@ -214,6 +214,15 @@
               Come back tomorrow or unlock unlimited listening.
             </p>
           </section>
+          <section id="paywallPaidLimitAlert" class="paywall-trial-alert hidden" aria-live="polite">
+            <p class="paywall-trial-alert-label">Monthly limit reached</p>
+            <p id="paywallPaidLimitCopy" class="paywall-trial-alert-copy"></p>
+            <p class="paywall-trial-alert-copy">Need more time? Add minutes for the rest of this billing period.</p>
+            <div class="topup-actions">
+              <button id="buyTopup50" class="secondary-action" type="button">Add 50 minutes — $2.99</button>
+              <button id="buyTopup100" class="secondary-action" type="button">Add 100 minutes — $4.99</button>
+            </div>
+          </section>
 
           <section id="authPanel" class="auth-panel hidden">
             <div id="authCopy" class="auth-copy">
@@ -245,7 +254,7 @@
             <p class="paywall-billing-note">Billed monthly $9.99 / month</p>
 
             <ul class="feature-list">
-              <li>Unlimited listening for your PDF sessions</li>
+              <li>300 minutes included each month</li>
               <li>Natural voices for smoother playback</li>
               <li>A cleaner daily reading flow in Chrome</li>
             </ul>
@@ -263,7 +272,7 @@
             <p class="paywall-billing-note">Billed annually $89.99 / year</p>
 
             <ul class="feature-list">
-              <li>Unlimited listening for long reading habits</li>
+              <li>3,600 minutes included each year</li>
               <li>Natural voices for smoother playback</li>
               <li>Best value for everyday PDF listening</li>
             </ul>

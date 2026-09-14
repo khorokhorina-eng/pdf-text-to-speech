@@ -31,11 +31,15 @@ const readingIssuePickerEl = document.getElementById("readingIssuePicker");
 const fileInput = document.getElementById("fileInput");
 const paywallStatusEl = document.getElementById("paywallStatus");
 const paywallTrialAlertEl = document.getElementById("paywallTrialAlert");
+const paywallPaidLimitAlertEl = document.getElementById("paywallPaidLimitAlert");
+const paywallPaidLimitCopyEl = document.getElementById("paywallPaidLimitCopy");
 const paywallIntroEl = document.getElementById("paywallIntro");
 const monthlyPlanCard = document.getElementById("monthlyPlanCard");
 const annualPlanCard = document.getElementById("annualPlanCard");
 const continueCheckoutMonthlyBtn = document.getElementById("continueCheckoutMonthly");
 const continueCheckoutAnnualBtn = document.getElementById("continueCheckoutAnnual");
+const buyTopup50Btn = document.getElementById("buyTopup50");
+const buyTopup100Btn = document.getElementById("buyTopup100");
 const accountActionBtn = document.getElementById("accountAction");
 const authMessageEl = document.getElementById("authMessage");
 const authCopyEl = document.getElementById("authCopy");
@@ -657,9 +661,9 @@ function getPlanPresentation() {
         ? `Ends on ${endLabel}.`
         : endLabel
         ? `Renews on ${endLabel}.`
-        : activePlanMeta.planMeta || "Unlimited listening is active on this account.";
+        : activePlanMeta.planMeta || "Your listening plan is active on this account.";
     return {
-      name: activePlanMeta.planSummary || "Unlimited Listening",
+      name: activePlanMeta.planSummary || "Listening plan",
       meta: datedMeta,
     };
   }
@@ -787,6 +791,7 @@ function updateUI() {
   drawerTrialNoticeEl?.classList.toggle("hidden", Boolean(currentSubscription?.active));
   updatePaywallCopy();
   updatePaywallTrialAlert();
+  updatePaywallPaidLimitAlert();
   drawerEmailEl.textContent = authState.signedIn ? authState.email : "Guest mode";
   accountActionBtn.textContent = authState.signedIn ? "Sign out" : "Sign in with Google";
   drawerUpgradeBtn.classList.toggle("hidden", currentSubscription?.active);
@@ -2739,6 +2744,24 @@ function updatePaywallTrialAlert() {
   paywallIntroEl?.classList.toggle("hidden", showTrialAlert);
 }
 
+function isPaidLimitReached() {
+  return Boolean(currentSubscription?.active && getLiveRemainingSeconds() <= 0);
+}
+
+function updatePaywallPaidLimitAlert() {
+  if (!paywallPaidLimitAlertEl) return;
+  const showPaidLimitAlert = isPaidLimitReached();
+  const renewalDate = formatPlanDateLabel(currentSubscription?.plan?.currentPeriodEnd) || "your renewal date";
+  if (paywallPaidLimitCopyEl) {
+    const includedMinutes = currentSubscription?.plan?.planId === "annual" ? 3600 : 300;
+    paywallPaidLimitCopyEl.textContent = `You’ve used all ${includedMinutes} minutes included in your current billing period. Your limit renews on ${renewalDate}.`;
+  }
+  paywallPaidLimitAlertEl.classList.toggle("hidden", !showPaidLimitAlert);
+  paywallTrialAlertEl?.classList.toggle("hidden", showPaidLimitAlert);
+  paywallStatusEl?.classList.toggle("hidden", showPaidLimitAlert);
+  paywallIntroEl?.classList.toggle("hidden", showPaidLimitAlert);
+}
+
 function updatePaywallCopy() {
   const hasCurrentPdf = Boolean(state.fileName);
   const currentPdfLabel = state.fileName || "this PDF";
@@ -2761,6 +2784,7 @@ function updateAuthUI() {
   }
   updatePaywallCopy();
   updatePaywallTrialAlert();
+  updatePaywallPaidLimitAlert();
   updateUI();
 }
 
@@ -3030,6 +3054,39 @@ async function openCheckoutForPlan(planId) {
     if (continueCheckoutAnnualBtn) {
       continueCheckoutAnnualBtn.disabled = false;
       continueCheckoutAnnualBtn.removeAttribute("aria-busy");
+    }
+    updateUI();
+  }
+}
+
+async function openCheckoutForTopup(topupId, button) {
+  if (!authState.signedIn || !currentSubscription?.active) {
+    setPaywallStatus("Sign in with an active subscription before adding minutes.");
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
+  setPaywallStatus("Creating secure checkout...");
+  try {
+    const result = await sendRuntimeMessage({
+      type: "createCheckoutSession",
+      planId: "",
+      topupId,
+      returnUrl: await getActiveTabUrl(),
+    });
+    if (!result.url) throw new Error("Checkout URL is missing.");
+    void trackAnalyticsEvent("topup_checkout_started", { topup_id: topupId });
+    chrome.tabs.create({ url: result.url });
+    checkoutReturnPending = true;
+    setPaywallStatus("Secure checkout opened in a new tab.");
+  } catch (error) {
+    setPaywallStatus(error.message || "Unable to open checkout.");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
     }
     updateUI();
   }
@@ -4401,6 +4458,14 @@ continueCheckoutAnnualBtn?.addEventListener("click", () => {
     return;
   }
   void openCheckoutForPlan("annual");
+});
+
+buyTopup50Btn?.addEventListener("click", () => {
+  void openCheckoutForTopup("topup_50", buyTopup50Btn);
+});
+
+buyTopup100Btn?.addEventListener("click", () => {
+  void openCheckoutForTopup("topup_100", buyTopup100Btn);
 });
 
 authGoogleBtn.addEventListener("click", () => {

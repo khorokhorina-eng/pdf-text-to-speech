@@ -995,6 +995,18 @@ body.drawer-open .profile-drawer {
   font-weight: 600;
 }
 
+.topup-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.topup-actions .secondary-action {
+  min-height: 42px;
+  font-size: 14px;
+}
+
 .auth-panel {
   padding: 12px;
   display: flex;
